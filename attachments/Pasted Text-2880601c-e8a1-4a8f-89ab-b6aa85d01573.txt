@@ -1,0 +1,129 @@
+@Plate — founder YES. One paste with all three. No Checkout, no archive import.
+
+```
+Grok Build — Steps match the list + Snap Done closes the sheet + Sell more Chef plates. Founder approved YES on Sep 8, 2026.
+
+Three named Approval Cards only. Do not invent anything else.
+1. Steps match the list
+2. Snap Done closes the sheet
+3. Sell more Chef plates
+
+Point at existing screens and files. Branch source Line walked is main @ 4f03584. Do not scaffold a new app. Encyclopedia (~1,324 / 1539 wired) and six skins stay. Barcode, Snap, log, Tonight, Shop-from-tonight stay free. Simple Kitchen stays basic with no Fuel tab. Family stays $4.99/mo. catalog-archive.ts stays unwired. It is 1412 scraps and should never go on the floor.
+
+Not in this paste:
+- No Checkout or Superstore hop
+- No archive import and no encyclopedia replacement
+- No paywall on library, Snap, barcode, Fuel, Body Sync, Plan tonight, or Shop-from-plan
+- No new tabs, no new prices, and no rewritten stories for titles Line did not flag
+
+---
+1 · Steps match the list (free core)
+
+Screens include the recipe ingredient rows and the steps for the 1539 wired titles, plus the Shop-from-plan generated from those rows.
+
+Rule: Every food a step names goes on the ingredient list or the step stops naming it. Pantry staples the method already calls for get listed so Shop buys them. Bare side telegrams “Rice.”, “Couscous.”, and “Couscous or bread.” either become a listed side or come off the step. Lamb titles use the lamb protein tag and not beef.
+
+Fix all titles in this class on the wired catalogs, including everything below. Do not invent extra dishes.
+
+Leaveners and structure named but not listed:
+- Blueberry pancakes (catalog-breakfast.ts): list includes flour, milk, egg, butter, blueberries, maple syrup. Step whisks flour, sugar, baking powder, and salt. Add sugar, baking powder, and salt.
+- Sea salt chocolate chip cookies: step lists sugars, eggs, vanilla, and “a teaspoon of baking soda.” No vanilla and no baking soda. Add both.
+- Nanaimo bars: “Melt butter with cocoa and a beaten egg.” Add egg.
+- Orange cake, War oatmeal cookies, and Applesauce cake: baking powder or “1 teaspoon baking soda” named. List it.
+- Mrs. Fisher's chow-chow: “Boil the vinegar with the mustard, a spoon of turmeric, and 1 cup sugar.” Add turmeric and sugar.
+- Tonkatsu: “Pound chops. Flour, egg, panko.” Add flour.
+- Fruit cake: “Spices, brandy, flour.” Add flour.
+- Molasses pudding: sugar and soda named. List both.
+- Carrot pudding: “Cream the butter and sugar.” Add butter.
+- Bride's angel food cake: soda and cream of tartar named. List both.
+- Piedmont potato croquettes: flour named. Add flour.
+- Apple pot pie: sugar not listed. Add sugar.
+- White House pecan pie, Kentucky pie, and Orange marmalade bread pudding: vanilla not listed. Add vanilla. Also add butter on the bread pudding.
+- Chicken nanban: “a little sugar as a dip sauce.” Add sugar.
+
+Step cooks food not on the list:
+- Shrimp Creole: oil, salt, cayenne, and thyme
+- Caldo de pollo: onion
+- Vegetable couscous and Salade niçoise: tomato
+- Som tam: garlic and tomato
+- Green mango salad, Drunken noodles, Dakgalbi, and Falafel grain bowl: garlic
+- Chicken Caesar salad: garlic and lemon
+- Brunswick stew: onion
+- Eggs Ponce de Leon: onion and flour
+- Crayfish bisque: celery and thyme
+- Sundubu jjigae: oil and scallion
+- Weeknight mapo tofu: starch
+- Sweet and sour pork: sugar
+- Massaman chicken curry: fish sauce
+- Lamb and apricot tagine: couscous (also “Almonds. Couscous.” — list almonds and couscous or drop that line)
+- Minnesota wild rice soup, Fish chowder, and Breakfast burrito: butter
+- Swedish meatballs: “a spoon of flour” if drippings are thin. Add flour.
+
+Bare “Rice.” with no rice on the list (same telegram shape in catalog-more.ts, catalog-plus.ts, and catalog-expand.ts, 43 total):
+List rice as a side or delete “Rice.” from the step. Named examples: Picadillo, Weeknight mole chicken, Weeknight mapo tofu, Yu xiang eggplant, Sweet and sour pork, Massaman chicken curry, Yellow curry with potato, Thai cashew chicken, Kimchi jjigae, Doenjang jjigae, Sundubu jjigae, Ropa vieja, Braised oxtail, Cuban black beans, Pumpkin chickpea curry, Chickpea tikka masala, Vegetable coconut curry, Instant Pot Thai chicken curry, Instant Pot chicken adobo, and Instant Pot rajma.
+And every other wired title that ends the same way.
+Related: Chicken preserved-lemon tagine “Cilantro. Couscous or bread.” List those or drop the line.
+
+Lamb tagged beef (protein enum): set to lamb.
+- Lamb and apricot tagine (catalog-expand.ts)
+- Instant Pot lamb stew, Sheet-pan lamb meatballs, and Herb lamb chops (catalog-plus.ts)
+- Barbecued lamb (catalog-southern.ts)
+
+States:
+- Empty: list shows only what is cooked. No blank rows.
+- Loading and error: do not save a title half-fixed.
+- Done: open the title, read step 1 against the rows. Shop-from-plan puts every named food in the bag.
+
+Preview:
+- Blueberry pancakes lists baking powder, sugar, and salt.
+- Tonkatsu lists flour.
+- “Rice.” titles lists rice or no longer says Rice.
+- Lamb and apricot tagine filters as lamb.
+- Shop-from-plan does not omit a food the step cooks.
+
+---
+2 · Snap Done closes the sheet (free core)
+
+Screens are the Snap typed log and the barcode result sheet.
+
+User steps:
+1. Snap, type leftover pasta, and hit Done once.
+2. The editor dismisses. “Leftover pasta logged” does not leave Cancel and Done sitting there.
+3. The meal stays logged. Stay on Snap or land on the logged meal. No second tap to close. No celebrate screen.
+4. Do the same for barcode result. Example: Greek yogurt from barcode 000000000001, Log as eaten, then Done. The sheet is gone and the log stays.
+
+States:
+- Empty: a fresh Snap and no leftover editor
+- Loading: stays on the sheet
+- Error: toast and keep the draft. Never wipe a mid-log.
+- Done: editor gone and food logged. Protect the log. No focus-stealing celebration.
+
+Not building: a new log mode, a paywall, or a second close control.
+Preview: Snap leftover pasta, hit Done, the sheet is gone, and the meal stays logged. Barcode yogurt does the same.
+
+---
+3 · Sell more Chef plates (existing packs only)
+
+Screens are where a Chef plate is used. Use existing Kitchen+ plate packs only.
+
+User steps:
+1. After a free Chef plate is used, show one honest line. “3 free Chef plates this week. More plates are extra.”
+2. The line sells only the existing packs at $2.99 and $5.99.
+3. Guest can still search the encyclopedia and log dinner with no pack purchase required.
+
+Not building: a new price, locking the free library, paywalling Snap, barcode, Fuel, Body Sync, Plan tonight, or Shop-from-plan. Family stays $4.99. No fake adaptive coach. No streak paywall.
+
+Free vs add-on: free library stays free. The paid control is only more Chef plates.
+Preview: Guest still searches the encyclopedia and logs dinner. The paid line sells only more Chef plates. Snap and barcode stay free.
+
+---
+Why and how it helps:
+- Steps match the list so Shop bags what the method cooks. A 5pm parent is not missing baking powder.
+- Snap Done finishes the log in one tap.
+- Chef plates are the week-1 cash path without the MFP anger of paywalling the log.
+
+Proof it worked:
+1. Blueberry pancakes lists baking powder. Tonkatsu lists flour. “Rice.” lists rice or the line is gone. Lamb and apricot tagine is lamb.
+2. Snap leftover pasta, hit Done, and the sheet is gone. The meal stays logged. Barcode sheet does the same.
+3. After a free Chef plate, the line reads “3 free Chef plates this week. More plates are extra.” Packs stay $2.99 and $5.99. The log stays free.
+```
