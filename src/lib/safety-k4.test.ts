@@ -36,9 +36,9 @@ test("k4-1: filler matching is case-, accent- and plural-insensitive; joined fil
   }
   assert.equal(isFillerItem("salt"), false);
   assert.equal(isFillerItem("Basil"), false);
-  assert.equal(isFillerItem("tomato sauce"), false);
+  assert.equal(isFillerItem("tomato sauce"), true);
   assert.equal(isFillerItem("garlic salt"), false);
-  assert.equal(isFillerItem("vanilla extract"), false);
+  assert.equal(isFillerItem("vanilla extract"), true);
 });
 
 test("k4-1: filler plus salt is one specific item; Line's lists refuse on pesto, ranch and taco seasoning", () => {

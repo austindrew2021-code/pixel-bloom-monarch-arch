@@ -701,10 +701,13 @@ function hasFoodWord(item: string): boolean {
 }
 
 // Vague filler items: they never count toward a MADE product's 2-item minimum.
-// Matching is case-, accent- and plural-insensitive (foldScan). An item made only
-// of filler words, joined by and/et/&/with/or/ou and/or modifiers (natural,
-// artificial, naturel(s), artificiel(s)), is filler. Whole item only, so
-// "tomato sauce" and "garlic salt" stay specific. Salt is never a filler word.
+// Matching is case-, accent- and plural-insensitive (foldScan) and whole-word
+// only, so "spiced" and "flavoured" are not filler. An item that contains a
+// filler word anywhere is filler, including qualifiers before or after it
+// ("Caramel colour", "Couleur caramel") and anything in brackets
+// ("Colour (caramel)", "Natural flavour (vanilla)", "Spices (paprika)").
+// This only changes the two-specific-item count; the allergen check still
+// reads the full raw text of every item. Salt is never a filler word.
 const FILLER_WORDS = new Set([
   "spice", "spices", "epice", "epices",
   "seasoning", "seasonings", "assaisonnement", "assaisonnements",
@@ -714,29 +717,20 @@ const FILLER_WORDS = new Set([
   "flavouring", "flavoring", "flavourings", "flavorings",
   "colour", "color", "colours", "colors", "colouring", "coloring",
   "colorant", "colorants",
+  "couleur", "couleurs",
   "condiment", "condiments",
   "blend", "blends",
   "extract", "extracts",
+  "extractive", "extractives",
   "arome", "aromes",
   "ingredient", "ingredients",
 ]);
-const FILLER_MODIFIERS = new Set([
-  "natural", "artificial",
-  "naturel", "naturelle", "naturels", "naturelles",
-  "artificiel", "artificielle", "artificiels", "artificielles",
-  "agent", "agents",
-  "fine", "fines",
-  "other",
-]);
-const FILLER_JOINERS = new Set(["and", "et", "with", "ou", "or"]);
 
 export function isFillerItem(item: string): boolean {
   const t = foldScan(item).replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
   if (!t) return false;
   const toks = t.split(/\s+/).filter(Boolean);
-  const rest = toks.filter((w) => !FILLER_JOINERS.has(w) && !FILLER_MODIFIERS.has(w));
-  // Only modifiers/joiners, or every leftover word is a filler word.
-  return rest.every((w) => FILLER_WORDS.has(w));
+  return toks.some((w) => FILLER_WORDS.has(w));
 }
 
 export function isRealIngredientList(raw: string | undefined | null, title?: string): boolean {
@@ -754,8 +748,8 @@ export function isRealIngredientList(raw: string | undefined | null, title?: str
   const made = Boolean(title && isMadeProductTitle(title));
   if (made) {
     // A made product needs at least two SPECIFIC (non-filler) items. One-item lists,
-    // filler-only items (including "Arômes naturels", "natural and artificial flavours",
-    // "Spices and herbs"), and filler plus salt (one specific item) are all no list.
+    // items that contain a filler word (including "Caramel colour", "Colour (caramel)",
+    // "Natural flavour (vanilla)"), and filler plus salt (one specific item) are all no list.
     const specific = items.filter((item) => !isFillerItem(item));
     return specific.length >= 2 && specific.some(hasFoodWord);
   }
