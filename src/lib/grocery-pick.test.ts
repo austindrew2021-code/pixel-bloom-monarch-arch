@@ -114,7 +114,8 @@ test("a sale 5-pack of avocados beats the regular 3-pack", () => {
     brand: "PC",
     title: "Hass Avocados Bag of 5",
     packageSizing: "1 ea",
-    pricing: { price: "6.99", wasPrice: "6.99", displayPrice: "$3.99" },
+    // r3: a plain sale is already in `price` (wasPrice is the old one), as in captured PCX tiles.
+    pricing: { price: "3.99", wasPrice: "$6.99", displayPrice: "$3.99" },
   });
   const three = shelfProduct("superstore", {
     brand: "PC",
@@ -150,8 +151,10 @@ test("5 for $3.99 covers the meal cheaper than two 3-packs", () => {
 });
 
 test("was price and unit price are not what you pay", () => {
-  assert.equal(payablePackPrice({ price: "5.99", wasPrice: "7.99", displayPrice: "$1.32/100g $3.99" }).priceCad, 3.99);
-  assert.equal(payablePackPrice({ price: "7.99", wasPrice: "7.99" }, { text: "SAVE $4" }).priceCad, 3.99);
+  // r3: the store's current `price` is the pack price; display text, was-price and deal text never override it.
+  assert.equal(payablePackPrice({ price: "5.99", wasPrice: "7.99", displayPrice: "$1.32/100g $3.99" }).priceCad, 5.99);
+  assert.equal(payablePackPrice({ price: "7.99", wasPrice: "7.99" }, { text: "SAVE $4" }).priceCad, 7.99);
+  assert.equal(payablePackPrice({ displayPrice: "about $15.46" }).priceCad, 15.46);
 });
 
 test("bag of 5 is five pieces, a gram size stays grams", () => {

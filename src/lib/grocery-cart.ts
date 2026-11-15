@@ -106,6 +106,14 @@ export function fillingLabel(heliosStore: boolean, cartsOff: boolean): string {
   return heliosStore && cartsOff ? "Saving your list…" : "Filling the cart…";
 }
 
+/** r3: store-check wording. 429 is the store being busy, not a person check. */
+export function storeCheckNotice(check: "person" | "busy" | undefined, filling: boolean): string {
+  if (check === "busy") return "The store is busy, try again in a minute.";
+  return filling
+    ? "The store asked to confirm you’re a person. Open it once, finish that check, then tap Fill again. Spoonful stops here so the check doesn’t get worse."
+    : "The store asked to confirm you’re a person. Open it once and finish that check. Spoonful will not keep asking.";
+}
+
 export function storeCanHoldCart(store: NearbyStore): boolean {
   return Boolean(pcxBannerFor(store));
 }
@@ -114,10 +122,47 @@ export async function ensureStoreCart(store: NearbyStore): Promise<string | null
   return (await ensureSavedCart(store))?.cartId ?? null;
 }
 
-async function ensureSavedCart(store: NearbyStore): Promise<SavedCart | null> {
-  if (!storeCanHoldCart(store) || cartOff) return null;
+let statusAsked: Promise<boolean> | null = null;
+
+/**
+ * r3: learn whether this host has carts (cart-disabled) WITHOUT making a store cart. One tiny
+ * request per page load, shared by every caller. Opening the sheet calls this, never a create.
+ * Returns true when carts are on. A failed check doesn't turn carts off (the first add still asks).
+ */
+export function storeCartStatus(store: NearbyStore): Promise<boolean> {
+  if (!storeCanHoldCart(store) || cartOff) return Promise.resolve(false);
+  const shopper = shopperId();
+  if (!shopper) return Promise.resolve(false);
+  if (!statusAsked) {
+    statusAsked = cartRequest({ action: "status", shopper, brand: store.brand, storeName: store.name })
+      .then((json) => {
+        if (json.error === "cart-disabled") cartOff = true;
+        return !cartOff;
+      })
+      .catch(() => {
+        statusAsked = null;
+        return !cartOff;
+      });
+  }
+  return statusAsked;
+}
+
+/** r3: one in-flight create per store per session; concurrent callers share it (no duplicate carts). */
+const creating = new Map<string, Promise<SavedCart | null>>();
+
+function ensureSavedCart(store: NearbyStore): Promise<SavedCart | null> {
+  if (!storeCanHoldCart(store) || cartOff) return Promise.resolve(null);
   const existing = savedCart(store);
-  if (existing) return existing;
+  if (existing) return Promise.resolve(existing);
+  const key = storageKey(store);
+  const pending = creating.get(key);
+  if (pending) return pending;
+  const run = createSavedCart(store).finally(() => creating.delete(key));
+  creating.set(key, run);
+  return run;
+}
+
+async function createSavedCart(store: NearbyStore): Promise<SavedCart | null> {
   const shopper = shopperId();
   if (!shopper) return null;
   const json = await cartRequest({

@@ -76,12 +76,16 @@ const detailCache = new Map<string, { at: number; detail: DetailJson | null }>()
 const CACHE_MS = 10 * 60 * 1000;
 
 /**
- * Bot-wall backoff (from the Grok workspace): when the store answers a search with a
- * person check, don't hammer it again for 2 minutes. Only the blocked state is cached;
- * prices and stock are still read fresh for every pick.
+ * Store-check backoff (from the Grok workspace), scoped to ONE shopper (r3): when the store answers
+ * that shopper's search with a person check or "busy", don't send that same shopper's next search
+ * for 2 minutes. Keyed by the owner's derived PC Express user id, so one cook's wall never shows
+ * the notice to anyone else. Only the check state is kept; prices and stock are read fresh.
+ * In-memory, per server instance (no shared storage), capped so it can't grow without bound.
  */
-const blockedCache = new Map<string, number>();
-const BLOCKED_MS = 2 * 60 * 1000;
+export type StoreCheck = "person" | "busy";
+const checkCache = new Map<string, { at: number; check: StoreCheck }>();
+const CHECK_MS = 2 * 60 * 1000;
+const CHECK_CACHE_MAX = 500;
 
 export type LiveInput = {
   store: { brand: StoreBrand; name: string };
@@ -103,8 +107,10 @@ export type LiveResult = {
   reason: string;
   live: boolean;
   pinnedUpc?: string;
-  /** The store answered with a person check (401/403/429 or a bot wall). The cook finishes it once on the store page. */
+  /** The store answered this shopper with a check: Fill stops. See `check` for which one. */
   blocked?: boolean;
+  /** "person" (401/403 or a bot-wall page: finish it on the store page) or "busy" (429: try again in a minute). */
+  check?: StoreCheck;
 };
 
 /** Exact-match options only (empty when the cook has to choose). */
@@ -124,7 +130,9 @@ export async function liveStoreResult(rawInput: LiveInput): Promise<LiveResult> 
   if (!storeId) return catalogResult(input, "unavailable");
   const identity = pcxIdentityFor(input.shopper);
   const found = await searchTiles(banner, storeId, input.line.name, identity);
-  if (found.tiles.length === 0) return { ...catalogResult(input, "unavailable"), blocked: found.blocked };
+  if (found.tiles.length === 0) {
+    return { ...catalogResult(input, "unavailable"), ...(found.check ? { blocked: true, check: found.check } : {}) };
+  }
   const products = found.tiles
     .map((tile) => tileToProduct(input.store, tile))
     .filter((p): p is MatchProduct => Boolean(p));
@@ -240,24 +248,29 @@ async function searchTiles(
   storeId: string,
   query: string,
   identity: PcxIdentity,
-): Promise<{ tiles: Tile[]; blocked: boolean }> {
+): Promise<{ tiles: Tile[]; check?: StoreCheck }> {
   const term = searchTermFor(query);
-  const wallKey = `${banner}:${storeId}`;
-  const wallAt = blockedCache.get(wallKey);
-  if (wallAt && Date.now() - wallAt < BLOCKED_MS) return { tiles: [], blocked: true };
+  // Per shopper, never global: the derived user id is stable per owner and random when there is none.
+  const wallKey = `${banner}:${storeId}:${identity.domainUserId}`;
+  const wall = checkCache.get(wallKey);
+  if (wall && Date.now() - wall.at < CHECK_MS) return { tiles: [], check: wall.check };
+  const remember = (check: StoreCheck) => {
+    if (checkCache.size >= CHECK_CACHE_MAX) checkCache.clear();
+    checkCache.set(wallKey, { at: Date.now(), check });
+  };
   const first = await searchPage(banner, storeId, term, 1, identity);
-  if (first.blocked) {
-    blockedCache.set(wallKey, Date.now());
-    return { tiles: [], blocked: true };
+  if (first.check) {
+    remember(first.check);
+    return { tiles: [], check: first.check };
   }
   const pageSize = first.pageSize || 48;
   const pages = Math.min(MAX_PAGES, Math.max(1, Math.ceil((first.total || 0) / pageSize)));
   const rest = pages > 1
     ? await Promise.all(Array.from({ length: pages - 1 }, (_, i) => searchPage(banner, storeId, term, i + 2, identity)))
     : [];
-  const blocked = rest.some((p) => p.blocked);
-  if (blocked) blockedCache.set(wallKey, Date.now());
-  else blockedCache.delete(wallKey);
+  const check = rest.find((p) => p.check)?.check;
+  if (check) remember(check);
+  else checkCache.delete(wallKey);
   const seen = new Set<string>();
   const tiles: Tile[] = [];
   for (const tile of [first, ...rest].flatMap((p) => p.tiles)) {
@@ -266,7 +279,7 @@ async function searchTiles(
     seen.add(id);
     tiles.push(tile);
   }
-  return { tiles, blocked };
+  return { tiles, check };
 }
 
 async function searchPage(
@@ -275,8 +288,8 @@ async function searchPage(
   term: string,
   page: number,
   identity: PcxIdentity,
-): Promise<{ tiles: Tile[]; total: number; pageSize: number; blocked: boolean }> {
-  const empty = { tiles: [] as Tile[], total: 0, pageSize: 48, blocked: false };
+): Promise<{ tiles: Tile[]; total: number; pageSize: number; check?: StoreCheck }> {
+  const empty: { tiles: Tile[]; total: number; pageSize: number; check?: StoreCheck } = { tiles: [], total: 0, pageSize: 48 };
   const headers = pcxHeaders(banner);
   if (!headers) return empty;
   const body = {
@@ -308,9 +321,9 @@ async function searchPage(
       signal: AbortSignal.timeout(10000),
     });
     const text = await res.text();
-    if (res.status === 401 || res.status === 403 || res.status === 429 || looksLikeBotWall(text)) {
-      return { ...empty, blocked: true };
-    }
+    // 429 is the store being busy (rate limit), not a person check; worded differently in the app.
+    if (res.status === 429) return { ...empty, check: "busy" };
+    if (res.status === 401 || res.status === 403 || looksLikeBotWall(text)) return { ...empty, check: "person" };
     if (!res.ok) return empty;
     const json = JSON.parse(text) as SearchJson;
     // Page 1 splits its tiles across several grid components (around a video); read them all.
@@ -318,7 +331,7 @@ async function searchPage(
     const tiles = grids.flatMap((c) => c.data!.productTiles!);
     const pagination = grids.find((c) => c.data?.pagination)?.data?.pagination;
     // Not cached: prices and stock are read fresh for every pick.
-    return { tiles, total: Number(pagination?.totalResults) || tiles.length, pageSize: Number(pagination?.pageSize) || 48, blocked: false };
+    return { tiles, total: Number(pagination?.totalResults) || tiles.length, pageSize: Number(pagination?.pageSize) || 48 };
   } catch {
     return empty;
   }

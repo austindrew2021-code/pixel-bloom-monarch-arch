@@ -15,7 +15,7 @@ import {
   type GroceryPick,
   type StoreOption,
 } from "@/lib/grocery-pick";
-import { addToStoreCart, cartFillAnnounced, ensureStoreCart, fillingLabel, storeCanHoldCart, storeCartOff, storeCartOpenUrl } from "@/lib/grocery-cart";
+import { addToStoreCart, cartFillAnnounced, fillingLabel, storeCanHoldCart, storeCartOff, storeCartOpenUrl, storeCartStatus, storeCheckNotice } from "@/lib/grocery-cart";
 import {
   FALLBACK_COORDS,
   fetchNearbyStores,
@@ -209,11 +209,11 @@ function OrderSheet({
   }, [store?.id]);
 
   useEffect(() => {
-    // One cart lookup when a store opens (a saved cart is reused, no call), so a cart-disabled host
-    // is known before any button promises a ping.
+    // One carts-on check when a store opens, so a cart-disabled host is known before any button
+    // promises a ping. r3: no store cart is made here; the cart is created on the first real add.
     if (!store || !storeCanHoldCart(store) || storeCartOff()) return;
     let live = true;
-    void ensureStoreCart(store)
+    void storeCartStatus(store)
       .catch(() => null)
       .then(() => {
         if (live) setCartsOff(storeCartOff());
@@ -315,11 +315,7 @@ function OrderSheet({
       setChoices(result.choices);
       setAskReason(result.status === "pick" ? "" : result.reason);
       setLive(result.live);
-      if (result.blocked) {
-        setStoreAsk(
-          "The store asked to confirm you’re a person. Open it once and finish that check. Spoonful will not keep asking.",
-        );
-      }
+      if (result.blocked) setStoreAsk(storeCheckNotice(result.check, false));
     } catch {
       setOptions([]);
       setChoices([]);
@@ -368,8 +364,9 @@ function OrderSheet({
     return result.ok;
   }
 
-  async function addAll() {
-    if (leftover.length === 0 || addingAll) return;
+  /** Fills what it can. Returns false when a store check stopped it (nothing is added then). */
+  async function addAll(): Promise<boolean> {
+    if (leftover.length === 0 || addingAll) return true;
     setAddingAll(true);
     setStoreAsk("");
     try {
@@ -382,9 +379,7 @@ function OrderSheet({
         const result = await loadStoreOptions(picked, item, profile);
         if (result.blocked) {
           blocked = true;
-          setStoreAsk(
-            "The store asked to confirm you’re a person. Open it once, finish that check, then tap Fill again. Spoonful stops here so the check doesn’t get worse.",
-          );
+          setStoreAsk(storeCheckNotice(result.check, true));
           break;
         }
         // No silent substitution: only an exact match is added without a tap.
@@ -425,15 +420,16 @@ function OrderSheet({
             .join(", ")}${unsure.length > 3 ? "…" : ""}.`
         : "";
       setCartsOff(storeCartOff());
+      // r3: a store check shows only the notice above the button; no fill or cart toast.
+      if (blocked) return false;
       toast(
-        blocked
-          ? "Store check — finish it on the store page, then fill again."
-          : (ok
+        (ok
               ? `${packed.length} packs are in the ${picked.name} cart.`
               : storeCartOff()
                 ? `List packed for ${picked.name}. Store carts aren’t available in Spoonful yet — your list is saved.`
                 : `List packed for ${picked.name}. Pay keeps it on the store screen.`) + askNote,
       );
+      return true;
     } finally {
       setAddingAll(false);
     }
@@ -442,7 +438,8 @@ function OrderSheet({
   async function fillAndNotify() {
     if (helios) {
       // Carts off on the host (cart-disabled): no "filling" toasts or pings, only addAll's saved-list message.
-      if (storeCanHoldCart(picked) && !storeCartOff()) await ensureStoreCart(picked);
+      // r3: carts-on check only; the store cart itself is created by the first add.
+      if (storeCanHoldCart(picked) && !storeCartOff()) await storeCartStatus(picked);
       if (!cartFillAnnounced(helios, storeCartOff())) {
         await addAll();
         return;
@@ -450,8 +447,9 @@ function OrderSheet({
       await enablePush();
       notifyNative("Filling your cart", `Spoonful is packing ${picked.name}. We'll ping you when it's ready to review.`);
       pushNote("Filling your cart", `Packing ${picked.name}. We'll ping you when it's ready.`);
-      await addAll();
-      if (storeCartOff()) return;
+      const filled = await addAll();
+      // r3: stopped by a store check (0 adds): no "Cart ready" ping and no "Cart is filling" toast.
+      if (!filled || storeCartOff()) return;
       const n = cart.items.length;
       notifyNative("Cart ready to review", `${n} packs are in the ${picked.name} bag. Open Shop when you want to check out.`);
       pushNote("Cart ready to review", `${n} packs at ${picked.name}.`);

@@ -1,5 +1,6 @@
 import { ChevronLeft, Dumbbell, Flame, Library, Scale } from "lucide-react";
 import { useState } from "react";
+import { useBackToClose } from "@/lib/back-close";
 import { ExerciseLibrary } from "@/components/exercise-library";
 import { ExerciseSheet } from "@/components/exercise-sheet";
 import { FitView } from "@/components/fit-view";
@@ -23,6 +24,8 @@ export function FitnessApp({
   onClose: () => void;
   onOpenStore: () => void;
 }) {
+  // r3: Android / browser Back closes the Train / Fuel overlay (f3 back-close), not the app.
+  useBackToClose(true, onClose);
   const [pane, setPane] = useState<Pane>(initialPane);
   const [library, setLibrary] = useState(false);
   const [detail, setDetail] = useState<Exercise | null>(null);

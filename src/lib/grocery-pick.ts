@@ -163,47 +163,48 @@ function asPackMoney(raw: unknown): number | null {
   return null;
 }
 
-/** Price the cook pays for one pack: the lower of current, displayed, and member. Never the higher was-price, never $/100g. */
+/**
+ * Strict "N for $X" multi-buy, nothing else in the text: "2 for $5", "5 for $3.99", "3/$10".
+ * Conditions ("$2.00 MIN 2", "$1.00 OFF", "$2 off 2", "SAVE $1"), member or PC Optimum offers,
+ * and anything we can't read for sure are ignored: the cook pays the regular price.
+ */
+const MULTI_BUY = /^\s*(\d{1,2})\s*(?:for|\/)\s*\$\s*(\d+(?:\.\d{1,2})?)\s*$/i;
+const MEMBER_DEAL = /\b(?:member|members|optimum|pco|pc\s*o|points?|mop)\b/i;
+
+/**
+ * Price one pack costs a shopper who is not a known PC Optimum member: the store's current
+ * `price` (which already includes a plain sale; `wasPrice` is the old price). The displayed price
+ * is only a fallback when `price` is missing. Member-only and MOP prices are never used (there is
+ * no membership flag), deal text is never read as a pack price, and a multi-buy is kept only when
+ * it is a plain "N for $X" that is cheaper per unit than the regular price. Pricing only re-ranks
+ * products that are already exact, covering matches; it never decides whether one matches.
+ */
 export function payablePackPrice(
   pricing?: ShelfPricing | null,
   deal?: ShelfDeal,
 ): { priceCad: number | null; dealCount?: number; dealCad?: number } {
-  const candidates: number[] = [];
-  for (const raw of [pricing?.price, pricing?.displayPrice, pricing?.memberOnlyPrice, pricing?.mopDisplayPrice]) {
-    const n = asPackMoney(raw);
-    if (n != null) candidates.push(n);
-  }
-  const dealText = `${deal?.text ?? ""} ${deal?.name ?? ""}`.trim();
-  let dealCount: number | undefined;
-  let dealCad: number | undefined;
-  const multi = dealText.match(/(\d{1,2})\s*(?:for|\/)\s*\$?\s*(\d+(?:\.\d{1,2})?)/i);
-  if (multi) {
-    const count = Number(multi[1]);
-    const cad = Number(multi[2]);
-    if (count >= 2 && count <= 24 && cad > 0 && cad < 500) {
-      dealCount = count;
-      dealCad = roundMoney(cad);
-    }
-  } else {
-    const sale = lowestShelfPrice(dealText);
-    if (sale != null) candidates.push(sale);
-  }
-  const was = asPackMoney(pricing?.wasPrice);
-  const save = dealText.match(/\b(?:save|off)\s*\$?\s*(\d+(?:\.\d{1,2})?)/i);
-  if (was != null && save) {
-    const cut = roundMoney(was - Number(save[1]));
-    if (cut > 0 && cut < was) candidates.push(cut);
-  }
-  if (!candidates.length) return { priceCad: null, dealCount, dealCad };
-  return { priceCad: Math.min(...candidates), dealCount, dealCad };
+  const priceCad = asPackMoney(pricing?.price) ?? asPackMoney(pricing?.displayPrice);
+  if (priceCad == null) return { priceCad: null };
+  const text = (deal?.text ?? "").trim();
+  const label = `${deal?.type ?? ""} ${deal?.name ?? ""}`;
+  if (!text || MEMBER_DEAL.test(text) || MEMBER_DEAL.test(label)) return { priceCad };
+  const multi = text.match(MULTI_BUY);
+  if (!multi) return { priceCad };
+  const count = Number(multi[1]);
+  const cad = Number(multi[2]);
+  // Per-unit derived and strictly cheaper than buying singles; otherwise it isn't a deal we trust.
+  if (count < 2 || count > 24 || !(cad > 0) || cad / count >= priceCad - 0.005) return { priceCad };
+  return { priceCad, dealCount: count, dealCad: roundMoney(cad) };
 }
 
 /** "Bag of 5" and "5 pack" count as five of the food, even when the size line says 1 ea. */
 export function packCountFromName(name: string): number | undefined {
   const text = name.replace(/\s+/g, " ").trim();
+  // A range ("8-10 count", "8 to 10 ct") is read as its low end, so the cart never under-buys.
+  const range = text.match(/\b(\d{1,2})\s*(?:-|–|to)\s*(\d{1,2})\s*(?:pk|packs|pack|ct|count|counts|pieces|pcs)\b/i);
   const bag = text.match(/\b(?:bag|pack|package|box|tray)\s+of\s+(\d{1,2})\b/i);
-  const lead = text.match(/\b(\d{1,2})\s*[- ]?(?:pk|packs|pack|ct|count|counts)\b/i);
-  const raw = bag?.[1] ?? lead?.[1];
+  const lead = text.match(/(?<![\d.\-–])\b(\d{1,2})\s*[- ]?(?:pk|packs|pack|ct|count|counts)\b/i);
+  const raw = range ? String(Math.min(Number(range[1]), Number(range[2]))) : (bag?.[1] ?? lead?.[1]);
   if (!raw) return undefined;
   const n = Number(raw);
   if (n >= 2 && n <= 48) return n;

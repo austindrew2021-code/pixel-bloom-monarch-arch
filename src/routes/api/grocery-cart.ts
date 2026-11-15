@@ -26,6 +26,8 @@ export const Route = createFileRoute("/api/grocery-cart")({
           if (!isShopperId(shopper)) return Response.json({ ok: false, error: "shopper" });
           // No cart signing secret on the server: no carts at all (fail closed).
           if (!cartSigningReady()) return Response.json({ ok: false, error: "cart-disabled" });
+          // r3: carts-on check for the sheet; no store call and no cart is made.
+          if (String(body.action ?? "") === "status") return Response.json({ ok: true });
           const store = {
             brand: (body.brand === "independent" || body.brand === "sobeys" || body.brand === "walmart"
               ? body.brand

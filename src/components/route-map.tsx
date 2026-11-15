@@ -43,6 +43,7 @@ export function RouteMap({
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<PlaceHit[]>([]);
   const [searching, setSearching] = useState(false);
+  const searchBusy = useRef(false);
   const [finding, setFinding] = useState(false);
   const choices = useMemo(() => distanceChoices(sport, Boolean(imperial)), [sport, imperial]);
   const [choiceKm, setChoiceKm] = useState(() => closestChoice(distanceChoices(sport, Boolean(imperial)), targetKm).km);
@@ -207,7 +208,9 @@ export function RouteMap({
   }
 
   async function search() {
-    if (query.trim().length < 2) return;
+    // r3: one search at a time. The ref blocks a second Enter before the "searching" state renders.
+    if (query.trim().length < 2 || searching || searchBusy.current) return;
+    searchBusy.current = true;
     setSearching(true);
     try {
       const rows = await searchPlaces({ data: { q: query.trim() } });
@@ -216,6 +219,7 @@ export function RouteMap({
     } catch {
       toast("Place search did not answer. Drag the map, or tap it.");
     } finally {
+      searchBusy.current = false;
       setSearching(false);
     }
   }
@@ -440,7 +444,7 @@ export function RouteMap({
               placeholder="Park, street, café"
               className="h-12 min-w-0 flex-1 rounded-xl bg-background/95 px-3 text-base shadow-[var(--shadow-border)]"
               onKeyDown={(e) => {
-                if (e.key === "Enter") void search();
+                if (e.key === "Enter" && !searching) void search();
               }}
             />
             <button

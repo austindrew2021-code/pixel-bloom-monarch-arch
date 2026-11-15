@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
+import { useBackToClose } from "@/lib/back-close";
 import { ChatPane } from "@/components/chat-pane";
 import { FamilyTable } from "@/components/people-view";
 import { Button } from "@/components/ui/button";
@@ -49,6 +50,8 @@ function authorOf(id: string, _me: string, myName: string) {
 }
 
 export function SocialApp({ onClose }: { onClose: () => void }) {
+  // r3: Android / browser Back closes the Social overlay (f3 back-close), not the app.
+  useBackToClose(true, onClose);
   const { user } = useCurrentUserState();
   const [pane, setPane] = useState<Pane>("home");
   const [pass, setPass] = useState<PassState>(() => loadPass());
