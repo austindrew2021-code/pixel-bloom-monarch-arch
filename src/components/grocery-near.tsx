@@ -1,6 +1,6 @@
 import { Check, ChevronLeft, Heart, MapPin, ShoppingBag } from "lucide-react";
 import { groceryProfile } from "@/lib/grocery-prefs";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
@@ -15,7 +15,7 @@ import {
   type GroceryPick,
   type StoreOption,
 } from "@/lib/grocery-pick";
-import { addToStoreCart, cartFillAnnounced, fillingLabel, nothingAddedText, storeAddFailedText, storeCanHoldCart, storeCartOff, storeCartOpenUrl, storeCartStatus, storeCheckNotice } from "@/lib/grocery-cart";
+import { addToStoreCart, addUntilFirstFailure, cartFillAnnounced, fillingLabel, itemsNeedPickText, nothingAddedText, packCountOf, packsInCartText, storeAddFailedText, storeCanHoldCart, storeCartOff, storeCartOpenUrl, storeCartStatus, storeCheckNotice } from "@/lib/grocery-cart";
 import {
   FALLBACK_COORDS,
   fetchNearbyStores,
@@ -174,6 +174,7 @@ function OrderSheet({
     () => (store ? matchCart(store, lines, profile) : { items: [], totalCad: 0 }),
     [store, lines, profile],
   );
+  const filledPacksRef = useRef(0);
   const [sent, setSent] = useState<Set<string>>(new Set());
   const [chosen, setChosen] = useState<Record<string, StoreOption>>({});
   const [viewing, setViewing] = useState<GroceryPick | null>(null);
@@ -422,12 +423,7 @@ function OrderSheet({
           }),
         );
       }
-      const askNote = unsure.length
-        ? ` ${unsure.length} ${unsure.length === 1 ? "item needs" : "items need"} your pick (no exact match): ${unsure
-            .map((item) => item.name)
-            .slice(0, 3)
-            .join(", ")}${unsure.length > 3 ? "…" : ""}.`
-        : "";
+      const askNote = unsure.length ? ` ${itemsNeedPickText(unsure.map((item) => item.name))}` : "";
       setCartsOff(storeCartOff());
       // r3: a store check shows only the notice above the button; no fill or cart toast.
       if (blocked) return false;
@@ -445,24 +441,26 @@ function OrderSheet({
         );
         return true;
       }
-      // k2 r2: add one pack at a time so the Filling ping waits for the first successful store add,
-      // and a failed or partial add can say how many packs made it in. Never "Cart ready" on a failure.
-      let added = 0;
-      for (const item of packed) {
+      // k2 r3: add one pack at a time and STOP at the first failed add or create (no further requests
+      // onto a refusing store). The Filling ping waits for the first successful store add. Pack counts
+      // are the sum of packs, not the number of lines. Never "Cart ready" on a failure.
+      const wantedPacks = packCountOf(packed);
+      const { added } = await addUntilFirstFailure(packed, async (item) => {
         const ok = await pushStore([item], merged);
-        if (!ok) continue;
-        added++;
-        if (onFirstPick) {
+        if (ok && onFirstPick) {
           const announce = onFirstPick;
           onFirstPick = undefined;
           await announce();
         }
-      }
-      if (added === packed.length) {
-        toast(`${packed.length} packs are in the ${picked.name} cart.` + askNote);
+        return ok;
+      });
+      const addedPacks = packCountOf(packed.slice(0, added));
+      if (addedPacks === wantedPacks) {
+        filledPacksRef.current = addedPacks;
+        toast(packsInCartText(addedPacks, picked.name) + askNote);
         return true;
       }
-      toast(storeAddFailedText({ added, wanted: packed.length }) + askNote);
+      toast(storeAddFailedText({ added: addedPacks, wanted: wantedPacks }) + askNote);
       return false;
     } finally {
       setAddingAll(false);
@@ -487,9 +485,9 @@ function OrderSheet({
       // r3: stopped by a store check (0 adds): no "Cart ready" ping and no "Cart is filling" toast.
       // k2: the same for any fill that added nothing (addAll already said "Nothing added yet." and why).
       if (!filled || storeCartOff()) return;
-      const n = cart.items.length;
-      notifyNative("Cart ready to review", `${n} packs are in the ${picked.name} bag. Open Shop when you want to check out.`);
-      pushNote("Cart ready to review", `${n} packs at ${picked.name}.`);
+      const n = filledPacksRef.current;
+      notifyNative("Cart ready to review", `${n} ${n === 1 ? "pack is" : "packs are"} in the ${picked.name} bag. Open Shop when you want to check out.`);
+      pushNote("Cart ready to review", `${n} ${n === 1 ? "pack" : "packs"} at ${picked.name}.`);
       toast("Cart is filling. You can put the phone down — we'll ping you.");
       return;
     }

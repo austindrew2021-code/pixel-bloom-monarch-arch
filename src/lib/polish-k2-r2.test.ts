@@ -109,8 +109,8 @@ test("k2-r2-2: standard Canadian table (±1 ml) then 0 to +10% over, never short
 
 // --- (3) fill ping and failed store add --------------------------------------------------------------
 test("k2-r2-3: failed store add wording; Filling ping is after the first successful store add", async () => {
-  assert.equal(storeAddFailedText(), "Couldn't add that to the store cart");
-  assert.equal(storeAddFailedText({ added: 0, wanted: 3 }), "Couldn't add that to the store cart");
+  assert.equal(storeAddFailedText(), "Couldn't add that to the store cart.");
+  assert.equal(storeAddFailedText({ added: 0, wanted: 3 }), "Couldn't add that to the store cart.");
   assert.equal(storeAddFailedText({ added: 2, wanted: 3 }), "Couldn't add that to the store cart. 2 of 3 packs made it in.");
   assert.doesNotMatch(storeAddFailedText({ added: 2, wanted: 3 }), /Cart ready|Cart is filling/i);
   assert.equal(nothingAddedText({ noPicks: true }).startsWith("Nothing added yet."), true);
@@ -118,11 +118,12 @@ test("k2-r2-3: failed store add wording; Filling ping is after the first success
   const add = s.slice(s.indexOf("async function addAll"), s.indexOf("async function fillAndNotify"));
   const loopAt = add.indexOf("for (const item of leftover)");
   const pushAt = add.indexOf("const ok = await pushStore([item], merged);");
-  const pingAt = add.indexOf("if (onFirstPick)");
+  const pingAt = add.indexOf("if (ok && onFirstPick)");
   assert.ok(loopAt > 0 && pushAt > loopAt && pingAt > pushAt, "onFirstPick must run after a successful pushStore, not while matching");
   assert.doesNotMatch(add.slice(loopAt, add.indexOf("setChosen(")), /onFirstPick/);
-  assert.match(add, /storeAddFailedText\(\{ added, wanted: packed\.length \}\)/);
-  assert.match(add, /toast\(storeAddFailedText\(\{ added, wanted: packed\.length \}\) \+ askNote\);\s*return false;/);
+  assert.match(add, /storeAddFailedText\(\{ added: addedPacks, wanted: wantedPacks \}\)/);
+  assert.match(add, /toast\(storeAddFailedText\(\{ added: addedPacks, wanted: wantedPacks \}\) \+ askNote\);\s*return false;/);
+  assert.match(add, /addUntilFirstFailure/);
   const fill = s.slice(s.indexOf("async function fillAndNotify"), s.indexOf("function launchTill"));
   assert.ok(fill.indexOf('notifyNative("Cart ready to review"') > fill.indexOf("if (!filled || storeCartOff()) return;"));
 });

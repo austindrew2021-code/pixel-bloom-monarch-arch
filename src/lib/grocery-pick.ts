@@ -380,6 +380,11 @@ export function normalizeKey(name: string): string {
     .trim();
 }
 
+/** k2 r3: "applesauce" is "apple sauce" both ways. Only paste/sauce/puree, so "wholesome" is not "whole". */
+function splitClosedForm(text: string): string {
+  return text.replace(/\b([a-z]{3,})(sauce|paste|pureed|puree)\b/g, "$1 $2");
+}
+
 const STOP_WORDS = new Set([
   "the",
   "and",
@@ -922,7 +927,7 @@ export function isRelevantProduct(productName: string, query: string, opts: { pl
 }
 
 function tokenize(text: string): string[] {
-  return normalizeKey(text)
+  return splitClosedForm(normalizeKey(text))
     .replace(/\b\d+([.,]\d+)?\s*(g|kg|ml|l|oz|lb|ct|pk|pack|count)?\b/g, " ")
     .split(/\s+/)
     .filter((token) => token.length > 2 && !STOP_WORDS.has(token) && !/^\d/.test(token));
@@ -977,7 +982,7 @@ function hayHas(hay: Set<string>, need: string): boolean {
 }
 
 function preparedGroups(text: string): Set<string> {
-  const hay = ` ${normalizeKey(text)} `;
+  const hay = ` ${splitClosedForm(normalizeKey(text))} `;
   const groups = new Set<string>();
   for (const group of PREPARED_GROUPS) {
     if (group.markers.some((marker) => hayHasMarker(hay, marker))) groups.add(group.id);

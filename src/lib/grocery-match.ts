@@ -105,6 +105,8 @@ export type PickResult = {
 // Text helpers
 
 function norm(text: string): string {
+  // k2 r3: "applesauce" normalizes as "apple sauce" so title matching and prepared-form
+  // checks are space-insensitive both ways (paste/sauce/puree only; "wholesome" is not "whole").
   return ` ${text
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -113,7 +115,8 @@ function norm(text: string): string {
     .replace(/[’']/g, "")
     .replace(/[^a-z0-9%]+/g, " ")
     .replace(/\s+/g, " ")
-    .trim()} `;
+    .trim()
+    .replace(/\b([a-z]{3,})(sauce|paste|pureed|puree)\b/g, "$1 $2")} `;
 }
 
 function has(t: string, re: RegExp): boolean {
@@ -751,8 +754,11 @@ export function canMatchesFlOz(ml: number, oz: number): boolean {
 }
 
 /**
- * k2 r2 (f): a bare "N oz can" is a Canadian label size. First the standard table (exact ml, ±1 ml);
- * otherwise accept only 0 to +10% over N × 28.4 ml — never short. 15 oz does not take 398 ml; 28 oz takes 796, not 750.
+ * k2 r3 (f): a bare "N oz can" is a Canadian label size.
+ * If the shelf has the standard table size (exact ml, ±1 ml), take that (cheapest among table-size matches).
+ * Only if no table-size can is on the shelf, accept 0 to +10% over N × 28.4 ml (cheapest among those).
+ * Never short. 14 oz takes 398 if present, else 400; 19 oz takes 540 if present, else 568.
+ * 15 oz does not take 398 ml; 28 oz takes 796, not 750.
  */
 export const CAN_OZ_ML = 28.4;
 export const CAN_OZ_TOLERANCE = 0.1;
@@ -763,11 +769,20 @@ export const CAN_OZ_STANDARD_ML: Record<string, number> = {
   "19": 540,
   "28": 796,
 };
-export function canMatchesOz(ml: number, oz: number): boolean {
-  const standard = CAN_OZ_STANDARD_ML[String(oz)] ?? CAN_OZ_STANDARD_ML[String(Number(oz))];
-  if (standard != null) return Math.abs(ml - standard) <= 1;
+export function canStandardMl(oz: number): number | undefined {
+  return CAN_OZ_STANDARD_ML[String(oz)] ?? CAN_OZ_STANDARD_ML[String(Number(oz))];
+}
+export function canMatchesOzTable(ml: number, oz: number): boolean {
+  const standard = canStandardMl(oz);
+  return standard != null && Math.abs(ml - standard) <= 1;
+}
+export function canMatchesOzOver(ml: number, oz: number): boolean {
   const want = oz * CAN_OZ_ML;
   return ml + 1e-9 >= want && ml <= want * (1 + CAN_OZ_TOLERANCE) + 1e-9;
+}
+/** Covers the line: table size, or (when used as a fallback) 0 to +10% over. Ranking prefers the table when any exists. */
+export function canMatchesOz(ml: number, oz: number): boolean {
+  return canMatchesOzTable(ml, oz) || canMatchesOzOver(ml, oz);
 }
 const BARE_OZ_RE = /(\d+(?:[.,]\d+)?)\s*-?\s*(?:oz|ounces?)\.?(?![a-z])/i;
 /** Can wording as a container (not "Canada", "candied", "pecan", "scant", "cane"). */
@@ -833,8 +848,8 @@ export function needAmount(
       const isCan = /\b(?:cans?|tins?|canned|tinned)\b/i.test(text);
       if (oz > 0) return isCan ? { ml: Math.ceil(q) * oz * US_FL_OZ_ML, printed: true, canFlOz: oz, cans: Math.ceil(q) } : { ml: Math.ceil(q) * oz * US_FL_OZ_ML, printed: true };
     }
-    // k2 r2 (f): "N oz can" / "(N oz) tin" is also a can size in fluid ounces (Canadian label). The weight
-    // reading stays for products listed in grams; a can listed in ml matches the standard table or 0 to +10% over N × 28.4 ml.
+    // k2 r3 (f): "N oz can" / "(N oz) tin" is also a can size in fluid ounces (Canadian label). The weight
+    // reading stays for products listed in grams; a can listed in ml matches the standard table, or 0 to +10% over when no table size is on the shelf.
     const bareOz = BARE_OZ_RE.exec(text);
     if (bareOz && CAN_CONTAINER.test(text)) {
       const oz = Number(bareOz[1]!.replace(",", "."));
@@ -921,7 +936,7 @@ function coverNeedBase(p: MatchProduct, line: NeedLine, gramsPerCup?: number): C
   if (need.canFlOz && need.cans && p.ml && canMatchesFlOz(p.ml, need.canFlOz)) {
     return { packs: need.cans, totalCad: round2(need.cans * p.priceCad), leftover: 0, leftoverShare: 0, byWeight: false };
   }
-  // k2 r2 (f): "N oz can" and this can is the standard size, or 0 to +10% over N × 28.4 ml: N of them.
+  // k2 r3 (f): "N oz can" and this can is the standard size, or (as a fallback cover) 0 to +10% over N × 28.4 ml: N of them.
   if (need.canOz && need.cans && p.ml && canMatchesOz(p.ml, need.canOz)) {
     return { packs: need.cans, totalCad: round2(need.cans * p.priceCad), leftover: 0, leftoverShare: 0, byWeight: false };
   }
@@ -1083,8 +1098,14 @@ export function pickExact(input: PickInput): PickResult {
   if (canNeed.canFlOz && ranked.some((r) => r.product.ml && canMatchesFlOz(r.product.ml, canNeed.canFlOz!))) {
     ranked = ranked.filter((r) => r.product.ml && canMatchesFlOz(r.product.ml, canNeed.canFlOz!));
   }
-  if (canNeed.canOz && ranked.some((r) => r.product.ml && canMatchesOz(r.product.ml, canNeed.canOz!))) {
-    ranked = ranked.filter((r) => r.product.ml && canMatchesOz(r.product.ml, canNeed.canOz!));
+  // k2 r3: table size first (cheapest among ±1 ml matches); only if none exist, 0 to +10% over (cheapest among those).
+  if (canNeed.canOz) {
+    const table = ranked.filter((r) => r.product.ml && canMatchesOzTable(r.product.ml, canNeed.canOz!));
+    if (table.length) ranked = table;
+    else {
+      const over = ranked.filter((r) => r.product.ml && canMatchesOzOver(r.product.ml, canNeed.canOz!));
+      if (over.length) ranked = over;
+    }
   }
   // k2 (e) / r2: on a canned/jarred line, or when the form is the product, a title with no form only
   // competes when no candidate names the matching form. (Different forms were already refused in compare.)
