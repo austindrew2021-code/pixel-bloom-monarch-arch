@@ -10,6 +10,7 @@ import {
 import { closestChoice, distanceChoices } from "@/lib/route-ideas";
 import { suggestLoops, type RouteIdea } from "@/lib/route-suggest";
 import { searchPlaces, type PlaceHit } from "@/lib/places";
+import { toastPlaceAnswer } from "@/lib/places-core";
 import { cn } from "@/lib/utils";
 
 const TILE = 256;
@@ -213,9 +214,9 @@ export function RouteMap({
     searchBusy.current = true;
     setSearching(true);
     try {
-      const rows = await searchPlaces({ data: { q: query.trim() } });
-      setHits(rows);
-      if (!rows.length) toast("No place matched that. Drag the map, or tap it.");
+      const answer = await searchPlaces({ data: { q: query.trim() } });
+      setHits(answer.hits);
+      toastPlaceAnswer(answer, toast);
     } catch {
       toast("Place search did not answer. Drag the map, or tap it.");
     } finally {

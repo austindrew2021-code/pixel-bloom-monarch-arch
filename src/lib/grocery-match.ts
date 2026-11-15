@@ -62,7 +62,15 @@ export type MatchProduct = StapleProduct & {
   breadcrumbs?: string[];
 };
 
-export type Cover = { packs: number; totalCad: number; leftover: number; leftoverShare: number; byWeight: boolean };
+export type Cover = {
+  packs: number;
+  totalCad: number;
+  leftover: number;
+  leftoverShare: number;
+  byWeight: boolean;
+  /** k2: set only when a multi-buy priced this cover ("5 for $3.99", or "5 for $3.99 + 1 × $1.69"). */
+  deal?: string;
+};
 
 export type Verdict = {
   ok: boolean;
@@ -97,6 +105,8 @@ export type PickResult = {
 // Text helpers
 
 function norm(text: string): string {
+  // k2 r3: "applesauce" normalizes as "apple sauce" so title matching and prepared-form
+  // checks are space-insensitive both ways (paste/sauce/puree only; "wholesome" is not "whole").
   return ` ${text
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -105,7 +115,8 @@ function norm(text: string): string {
     .replace(/[’']/g, "")
     .replace(/[^a-z0-9%]+/g, " ")
     .replace(/\s+/g, " ")
-    .trim()} `;
+    .trim()
+    .replace(/\b([a-z]{3,})(sauce|paste|pureed|puree)\b/g, "$1 $2")} `;
 }
 
 function has(t: string, re: RegExp): boolean {
@@ -384,13 +395,101 @@ function precautionHit(id: string, ingredients: string): boolean {
   });
 }
 
+/**
+ * A made product (paste, sauce, puree, …) is never a single-ingredient whole food,
+ * regardless of a meat / seafood / produce category. Checked on the raw title, the
+ * split/normalized title, and a squashed form. "mixed greens" is not a "mix".
+ */
+const MADE_PRODUCT_WORD = /\b(?:pastes?|sauces?|purees?|pureed|spreads?|dips?|mixes?|seasonings?|stocks?|broths?|soups?|dressings?|marinades?|pestos?|relishes?|salsas?|chutneys?|ketchups?)\b/i;
+const MADE_PRODUCT_SQUASH = /(?:paste|sauce|puree|pureed|spread|dip|mix|seasoning|stock|broth|soup|dressing|marinade|pesto|relish|salsa|chutney|ketchup)s?$/i;
+
+export function squashedText(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+export function isMadeProductTitle(title: string): boolean {
+  const stripped = title.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  if (MADE_PRODUCT_WORD.test(stripped)) return true;
+  if (MADE_PRODUCT_WORD.test(norm(title))) return true;
+  return MADE_PRODUCT_SQUASH.test(squashedText(stripped));
+}
+
 /** Single-ingredient raw foods whose title alone is enough to judge a shield. */
-function wholeFood(a: Attrs): boolean {
+function wholeFood(a: Attrs, title: string): boolean {
+  // k2 r4: a made-product word is never a whole food, even on meat / seafood / produce.
+  if (isMadeProductTitle(title)) return false;
   if (a.prepared.length) return false;
   if (a.category === "meat" || a.category === "seafood") return !a.ground || a.species.length === 1;
   if (a.category === "produce") return a.form !== "canned" && a.form !== "dried";
   if (a.category === "eggs") return true;
   return false;
+}
+
+/**
+ * Squashed-title keywords for allergen / meat / fish / shellfish hits when words are joined
+ * ("shrimppaste"). Short lookalike-prone stems (bare "nut", "egg" in eggplant) are denied below.
+ */
+const SQUASH_SHIELD_KEYS: Record<string, string[]> = {
+  shellfish: ["shrimp","shrimps","prawn","prawns","crab","crabs","lobster","lobsters","clam","clams","clamato","mussel","mussels","scallop","scallops","oyster","oysters","crawfish","crayfish","krill","langoustine","langoustines","shellfish","crustacean","crustaceans","mollusc","molluscs","mollusk","mollusks"],
+  fish: ["fish","salmon","haddock","halibut","tuna","tilapia","trout","pollock","mackerel","sardine","sardines","anchov","hake","herring","caviar","worcestershire","bonito","dashi","cod","basa"],
+  nuts: ["peanut","peanuts","almond","almonds","walnut","walnuts","pecan","pecans","cashew","cashews","pistachio","pistachios","hazelnut","hazelnuts","filbert","filberts","macadamia","pinenut","pinenuts","pine nuts","brazilnut","brazilnuts","praline","pralines","marzipan","nougat","gianduja","treenut","treenuts"],
+  dairy: ["milk","butter","cheese","cheeses","cheddar","mozzarella","parmesan","yogurt","yoghurt","whey","casein","caseinate","lactose","ghee","kefir","sourcream","curd","curds","dairy"],
+  gluten: ["wheat","flour","barley","rye","malt","oat","oats","spelt","semolina","durum","bread","crumb","crumbs","panko","pasta","noodle","noodles","couscous","seitan","soysauce","teriyaki","batter","battered","breaded","graham","cracker","crackers","biscuit","biscuits","bran","triticale","kamut","farro","bulgur","brewer","beer","gluten"],
+  egg: ["egg","eggs","eggyolk","eggyolks","eggwhite","eggwhites","eggnog","yolk","yolks","albumin","albumen","mayonnaise","mayo","meringue","lysozyme"],
+  soy: ["soy","soya","soybean","soybeans","tofu","edamame","miso","tempeh","tamari","shoyu","teriyaki"],
+  sesame: ["sesame","tahini","halva","halvah","gomasio","benne","zaatar"],
+  spicy: ["chili","chilli","chile","cayenne","jalapeno","hotsauce","harissa","sriracha","gochujang","chipotle","habanero","scotchbonnet","spicy","buffalo","cajun","jerk","curry","szechuan"],
+};
+const SQUASH_MEAT_KEYS = ["chicken","beef","pork","lamb","turkey","veal","duck","goat","bison","venison","rabbit","ham","hams","bacon","prosciutto","pancetta","sausage","sausages","pepperoni","salami","gelatin","gelatine","lard","tallow","suet","meat","meats","bonebroth","meatbroth","chickenbroth","beefbroth","porkbroth","beefstock","chickenstock","rennet","carmine"];
+
+function squashHasKey(squashed: string, key: string): boolean {
+  return squashed.includes(key.replace(/\s+/g, ""));
+}
+
+function squashDenied(id: string, squashed: string, key: string): boolean {
+  const without = (re: RegExp) => squashed.replace(re, "");
+  if (id === "egg" && key.startsWith("egg") && /eggplant/.test(squashed) && !without(/eggplant/g).includes(key)) return true;
+  if (id === "gluten" && key === "wheat" && /buckwheat/.test(squashed) && !without(/buckwheat/g).includes("wheat")) return true;
+  if (id === "gluten" && (key === "oat" || key === "oats")) {
+    const cleaned = squashed.replace(/[gcb]oat(?:s|cheese|milk|meat|milk)?/g, " ").replace(/[fb]loats?/g, " ").replace(/throats?/g, " ").replace(/moats?/g, " ").replace(/groats/g, " ");
+    return !cleaned.includes(key);
+  }
+  if (id === "gluten" && key === "bread" && /breadfruit/.test(squashed) && !without(/breadfruit/g).includes("bread")) return true;
+  if (id === "gluten" && key === "malt" && /malt(?:odextrin|ose|itol)/.test(squashed) && !without(/malt(?:odextrin|ose|itol)/g).includes("malt")) return true;
+  if (id === "shellfish" && key.startsWith("crab") && /crabapple/.test(squashed) && !without(/crabapples?/g).includes(key === "crabs" ? "crabs" : "crab")) return true;
+  if (id === "shellfish" && key.startsWith("oyster") && /oystermushroom/.test(squashed) && !without(/oystermushrooms?/g).includes(key === "oysters" ? "oysters" : "oyster")) return true;
+  if (id === "shellfish" && key.startsWith("scallop") && /scalloped/.test(squashed) && !without(/scalloped/g).includes(key)) return true;
+  if (id === "shellfish" && key.startsWith("clam") && /clamshell/.test(squashed) && !without(/clamshells?/g).includes(key === "clams" ? "clams" : "clam")) return true;
+  if (id === "fish" && key === "hake" && squashed.includes("shake") && !without(/shake/g).includes("hake")) return true;
+  if (id === "fish" && key === "basa" && /basmati/.test(squashed) && !without(/basmati/g).includes("basa")) return true;
+  if (id === "spicy" && (key === "chile" || key === "chili" || key === "chilli") && /chilean/.test(squashed) && !without(/chilean/g).includes(key)) return true;
+  if (id === "dairy") {
+    const plant = squashed.replace(/(?:coconut|almond|oat|soy|soya|rice|cashew|hemp|pea|macadamia|hazelnut|plant|vegan|nondairy|peanut|nut|seed|sunflower|pumpkin|cocoa|cacao|shea|apple|sesame)s?(?:milk|beverage|butter|cream|creamer|cheese|yogurt|yoghurt|spread)/g, "").replace(/butter(?:beans?|lettuce|nutsquash)|butternut|creamoftartar|creamstylecorn|creamedcorn|milkthistle/g, "");
+    return !plant.includes(key);
+  }
+  return false;
+}
+
+function squashHitsShield(id: string, squashed: string): boolean {
+  return (SQUASH_SHIELD_KEYS[id] ?? []).some((key) => squashHasKey(squashed, key) && !squashDenied(id, squashed, key));
+}
+
+function squashHitsMeat(squashed: string): boolean {
+  return SQUASH_MEAT_KEYS.some((key) => {
+    if (!squashHasKey(squashed, key)) return false;
+    if (key === "ham" || key === "hams") {
+      return !["graham", "chamomile", "abraham", "birmingham", "champion"].some((deny) => squashed.includes(deny)) || squashed.replace(/graham|chamomile|abraham|birmingham|champion/g, "").includes(key);
+    }
+    return true;
+  });
+}
+
+function squashHitsSeafood(squashed: string): boolean {
+  return squashHitsShield("shellfish", squashed) || squashHitsShield("fish", squashed);
 }
 
 export function shieldBlocks(
@@ -425,7 +524,10 @@ export function shieldBlocks(
     return false;
   };
   const out: string[] = [];
-  const doubt = !opts.ignoreDoubt && !wholeFood(attrs) && !ingredients;
+  // k2 r4: a made product with no label is never a whole food; doubt fails every asked tag.
+  const doubt = !opts.ignoreDoubt && !wholeFood(attrs, title) && !ingredients;
+  const splitTitle = norm(title);
+  const squashed = squashedText(title);
   for (const id of allergies) {
     const re = SHIELD_RE[id];
     if (!re) {
@@ -439,8 +541,8 @@ export function shieldBlocks(
       out.push(`${id} shield: may contain (ingredients list)`);
       continue;
     }
-    // A "gluten-free"/"dairy-free" title clears the title only, never a matching ingredient.
-    const titleHit = re.test(prep(title));
+    // k2 r4: test the raw title, the split/normalized title, and a squashed form. Any hit wins; splitting only adds refusals.
+    const titleHit = re.test(prep(title)) || re.test(prep(splitTitle)) || squashHitsShield(id, squashed);
     if (titleHit && !stateFree(id)) {
       out.push(`${id} shield: "${title}"`);
       continue;
@@ -452,16 +554,19 @@ export function shieldBlocks(
     if (doubt && !stateFree(id)) out.push(`${id} shield: no ingredient list to check`);
   }
   const veg = (x: string) => plain(x).replace(MEAT_LOOKALIKE, " ");
-  const vegText = `${veg(title)} ${veg(ingredients)}`;
+  // Raw + split + ingredients; squashed species/meat words can only add a refusal.
+  const vegText = `${veg(title)} ${veg(splitTitle)} ${veg(ingredients)}`;
+  const squashMeat = squashHitsMeat(squashed);
+  const squashSea = squashHitsSeafood(squashed);
   if (prefs.has("vegetarian") || prefs.has("vegan")) {
     const who = prefs.has("vegan") ? "vegan" : "vegetarian";
     const plantTitle = attrs.prepared.includes("plant");
-    if ((!plantTitle && (attrs.category === "meat" || attrs.category === "seafood")) || MEAT_RE.test(vegText) || SEAFOOD_RE.test(vegText)) {
+    if ((!plantTitle && (attrs.category === "meat" || attrs.category === "seafood")) || MEAT_RE.test(vegText) || SEAFOOD_RE.test(vegText) || squashMeat || squashSea) {
       out.push(`${who}: contains meat or fish`);
     } else if (doubt) out.push(`${who}: no ingredient list to check`);
   } else if (prefs.has("pescatarian")) {
     const plantTitle = attrs.prepared.includes("plant");
-    if ((!plantTitle && attrs.category === "meat") || MEAT_RE.test(vegText)) out.push("pescatarian: contains meat");
+    if ((!plantTitle && attrs.category === "meat") || MEAT_RE.test(vegText) || squashMeat) out.push("pescatarian: contains meat");
     else if (doubt) out.push("pescatarian: no ingredient list to check");
   }
   if (prefs.has("vegan") && VEGAN_ANIMAL.test(`${title} ${ingredients}`)) out.push("vegan: animal product");
@@ -521,7 +626,42 @@ export function lineSaysCanned(line: { name: string; unit?: string }): boolean {
   return CAN_UNIT.test((line.unit ?? "").trim()) || CAN_WORDS.test(line.name);
 }
 
-export type CompareOpts = { canOk?: boolean };
+export type CompareOpts = { canOk?: boolean; unit?: string };
+
+/** k2 (e): packaged-product forms. "purée"/"pureed" are puree. */
+const PRODUCT_FORMS: [string, RegExp][] = [
+  ["diced", /\bdiced\b/],
+  ["whole", /\bwhole\b/],
+  ["crushed", /\bcrushed\b/],
+  ["stewed", /\bstewed\b/],
+  ["puree", /\b(?:puree|pureed)\b/],
+  ["paste", /\bpaste\b/],
+  ["sauce", /\bsauce\b/],
+];
+const FORM_EXEMPT = new Set(["meat", "seafood"]);
+/** Forms that *are* the product (not a cut). "applesauce" is "apple sauce". */
+const PRODUCT_IS_FORM = new Set(["paste", "sauce", "puree"]);
+const JAR_UNIT = /^(?:jars?)$/i;
+/** Space-insensitive hay for form words: "applesauce" reads as "apple sauce". Only paste/sauce/puree, so "wholesome" is not "whole". */
+function formHay(text: string): string {
+  return norm(text).replace(/\b([a-z]{3,})(sauce|paste|pureed|puree)\b/g, "$1 $2");
+}
+export function productForms(text: string): Set<string> {
+  const t = formHay(text);
+  return new Set(PRODUCT_FORMS.filter(([, re]) => re.test(t)).map(([id]) => id));
+}
+
+/**
+ * k2 r2: the named-form rule applies only on a canned/jarred line (unit can/cans/tin/tins/jar/jars,
+ * or the line says canned/tinned) or when the form itself is the product (paste, sauce, puree).
+ * Fresh lines ("crushed garlic", "diced onion", "diced tomatoes") skip it. Meat and seafood stay exempt.
+ */
+export function formRuleApplies(line: { name: string; unit?: string }, category?: string): boolean {
+  if (FORM_EXEMPT.has(category ?? "")) return false;
+  if (JAR_UNIT.test((line.unit ?? "").trim()) || lineSaysCanned(line)) return true;
+  const forms = productForms(line.name);
+  return [...forms].some((f) => PRODUCT_IS_FORM.has(f));
+}
 
 export function compare(needText: string, product: MatchProduct, aisle?: string, opts: CompareOpts = {}): Verdict {
   const need = parseAttrs(needText);
@@ -636,6 +776,14 @@ export function compare(needText: string, product: MatchProduct, aisle?: string,
     }
   }
 
+  // k2 (e) / r2: a named form on a canned/jarred line, or when the form is the product (paste, sauce, puree):
+  // a title naming a different form is a different product. Fresh produce skips this. Meat and seafood keep their cut rules.
+  if (formRuleApplies({ name: needText, unit: opts.unit }, need.category)) {
+    const nf = productForms(needText);
+    const pf = productForms(product.name);
+    if (nf.size && pf.size && ![...pf].some((f) => nf.has(f))) differs.push(`${[...pf].join(", ")}, recipe says ${[...nf].join(", ")}`);
+  }
+
   if (need.sizeGrade && prod.sizeGrade && need.sizeGrade !== prod.sizeGrade) differs.push(`${prod.sizeGrade}, recipe says ${need.sizeGrade}`);
 
   // Same food at all? Token/head/other-food check on the attribute-free text.
@@ -699,6 +847,41 @@ export function canMatchesFlOz(ml: number, oz: number): boolean {
   return ml >= Math.floor(oz * CAN_FL_OZ_MIN_ML) && ml <= Math.ceil(oz * CAN_FL_OZ_MAX_ML);
 }
 
+/**
+ * k2 r3 (f): a bare "N oz can" is a Canadian label size.
+ * If the shelf has the standard table size (exact ml, ±1 ml), take that (cheapest among table-size matches).
+ * Only if no table-size can is on the shelf, accept 0 to +10% over N × 28.4 ml (cheapest among those).
+ * Never short. 14 oz takes 398 if present, else 400; 19 oz takes 540 if present, else 568.
+ * 15 oz does not take 398 ml; 28 oz takes 796, not 750.
+ */
+export const CAN_OZ_ML = 28.4;
+export const CAN_OZ_TOLERANCE = 0.1;
+export const CAN_OZ_STANDARD_ML: Record<string, number> = {
+  "5.5": 156,
+  "10": 284,
+  "14": 398,
+  "19": 540,
+  "28": 796,
+};
+export function canStandardMl(oz: number): number | undefined {
+  return CAN_OZ_STANDARD_ML[String(oz)] ?? CAN_OZ_STANDARD_ML[String(Number(oz))];
+}
+export function canMatchesOzTable(ml: number, oz: number): boolean {
+  const standard = canStandardMl(oz);
+  return standard != null && Math.abs(ml - standard) <= 1;
+}
+export function canMatchesOzOver(ml: number, oz: number): boolean {
+  const want = oz * CAN_OZ_ML;
+  return ml + 1e-9 >= want && ml <= want * (1 + CAN_OZ_TOLERANCE) + 1e-9;
+}
+/** Covers the line: table size, or (when used as a fallback) 0 to +10% over. Ranking prefers the table when any exists. */
+export function canMatchesOz(ml: number, oz: number): boolean {
+  return canMatchesOzTable(ml, oz) || canMatchesOzOver(ml, oz);
+}
+const BARE_OZ_RE = /(\d+(?:[.,]\d+)?)\s*-?\s*(?:oz|ounces?)\.?(?![a-z])/i;
+/** Can wording as a container (not "Canada", "candied", "pecan", "scant", "cane"). */
+const CAN_CONTAINER = /\b(?:cans?|tins?|canned|tinned)\b/i;
+
 /** "28 fl oz", "28 fl. oz.", "28 US fl oz", "28 fluid ounces", "28 imperial fl oz". */
 const FL_OZ_RE = /(\d+(?:[.,]\d+)?)\s*(?:u\.?s\.?\s*|imperial\s*|imp\.?\s*)?(?:fl\.?\s*oz\.?|fluid\s*ounces?|fl\.?\s*ounces?)(?![a-z])/i;
 
@@ -727,7 +910,7 @@ export function printedSize(text: string): { ml?: number; g?: number } | null {
 export function needAmount(
   line: NeedLine,
   gramsPerCup?: number,
-): { g?: number; ml?: number; each?: number; packages?: number; printed?: boolean; canFlOz?: number; cans?: number } {
+): { g?: number; ml?: number; each?: number; packages?: number; printed?: boolean; canFlOz?: number; canOz?: number; cans?: number } {
   const u = (line.unit || "").trim().toLowerCase().replace(/\.$/, "");
   const q = Math.abs(Number(line.qty)) || 0;
   if (!q) return {};
@@ -759,10 +942,23 @@ export function needAmount(
       const isCan = /\b(?:cans?|tins?|canned|tinned)\b/i.test(text);
       if (oz > 0) return isCan ? { ml: Math.ceil(q) * oz * US_FL_OZ_ML, printed: true, canFlOz: oz, cans: Math.ceil(q) } : { ml: Math.ceil(q) * oz * US_FL_OZ_ML, printed: true };
     }
+    // k2 r3 (f): "N oz can" / "(N oz) tin" is also a can size in fluid ounces (Canadian label). The weight
+    // reading stays for products listed in grams; a can listed in ml matches the standard table, or 0 to +10% over when no table size is on the shelf.
+    const bareOz = BARE_OZ_RE.exec(text);
+    if (bareOz && CAN_CONTAINER.test(text)) {
+      const oz = Number(bareOz[1]!.replace(",", "."));
+      if (oz > 0) return { g: Math.ceil(q) * oz * OZ_G, printed: true, canOz: oz, cans: Math.ceil(q) };
+    }
     if (printed?.ml) return { ml: Math.ceil(q) * printed.ml, printed: true };
     if (printed?.g) return { g: Math.ceil(q) * printed.g, printed: true };
   }
   if (PACKAGE_UNITS.has(u)) return { packages: Math.ceil(q) };
+  // k2: no unit, but the line itself says can/tin ("tinned tomatoes", "1 can of coconut milk"): count cans.
+  // A leading "N can(s)" in the name is that many per quantity.
+  if (u === "" && CAN_CONTAINER.test(line.name)) {
+    const lead = /^\s*(\d+)\s+(?:cans?|tins?)\b/i.exec(line.name);
+    return { packages: Math.ceil(q) * (lead ? Number(lead[1]) : 1) };
+  }
   if (EACH_UNITS.has(u)) {
     const name = `${line.name} ${u}`.toLowerCase();
     const each = EACH_GRAMS.find((row) => row.re.test(name));
@@ -789,10 +985,18 @@ function trayGrams(p: MatchProduct): number | undefined {
 }
 
 /**
- * Multi-buy on one loose item ("5 for $3.99", from the Grok workspace's shelf pricing):
- * when the line is counted (not weighed or measured), buying the deal group can cost less.
- * Only lowers a confirmed cover's price; never makes an unconfirmed match coverable.
+ * Multi-buy on one loose item ("5 for $3.99", from the Grok workspace's shelf pricing).
+ * k2 (Kitchen ruling, Nov 15): the deal applies only when the line's needed count is >= N. Below N the
+ * regular unit price is used for ranking and display, and we never buy extra to reach a deal.
+ * At or above N, each full group of N is bought at the deal and any remainder at the regular price
+ * (need 6 with "5 for $3.99" at $1.69 = 3.99 + 1.69 = $5.68 for 6 packs). The cover says which deal was
+ * used (`deal: "5 for $3.99"`) so the price is shown as the deal, never as a bare single price.
+ * Only lowers a confirmed cover's price; never makes an unconfirmed match coverable, never changes packs.
  */
+export function multiBuyLabel(dealCount: number, dealCad: number): string {
+  return `${dealCount} for $${dealCad.toFixed(2)}`;
+}
+
 function withMultiBuy(p: MatchProduct, need: ReturnType<typeof needAmount>, cover: Cover | null): Cover | null {
   if (!cover || cover.byWeight || p.grams || p.ml || !(need.each || need.packages)) return cover;
   const size = Math.max(1, p.each || 1);
@@ -800,25 +1004,13 @@ function withMultiBuy(p: MatchProduct, need: ReturnType<typeof needAmount>, cove
   const dealCad = p.dealCad;
   if (size !== 1 || !dealCount || !dealCad || dealCount < 2 || dealCad >= p.priceCad * dealCount - 0.009) return cover;
   const packs = cover.packs;
-  let bestPacks = packs;
-  let bestTotal = cover.totalCad;
-  const groups = Math.ceil(packs / dealCount);
-  if (groups * dealCad < bestTotal - 0.009) {
-    bestTotal = groups * dealCad;
-    bestPacks = groups * dealCount;
-  }
+  if (packs < dealCount) return cover;
   const full = Math.floor(packs / dealCount);
   const rem = packs - full * dealCount;
-  if (full > 0 && rem > 0) {
-    const mixed = full * dealCad + rem * p.priceCad;
-    if (mixed < bestTotal - 0.009) {
-      bestTotal = mixed;
-      bestPacks = full * dealCount + rem;
-    }
-  }
-  if (bestPacks === packs && bestTotal === cover.totalCad) return cover;
-  const extra = bestPacks - packs;
-  return { ...cover, packs: bestPacks, totalCad: round2(bestTotal), leftover: cover.leftover + extra };
+  const total = full * dealCad + rem * p.priceCad;
+  if (total >= cover.totalCad - 0.009) return cover;
+  const label = multiBuyLabel(dealCount, dealCad);
+  return { ...cover, totalCad: round2(total), deal: rem > 0 ? `${label} + ${rem} × $${p.priceCad.toFixed(2)}` : label };
 }
 
 export function coverNeed(p: MatchProduct, line: NeedLine, gramsPerCup?: number): Cover | null {
@@ -836,6 +1028,10 @@ function coverNeedBase(p: MatchProduct, line: NeedLine, gramsPerCup?: number): C
   if (need.printed && need.ml && !p.ml) return null;
   // "N cans (X fl oz)" and this can's metric size is X fl oz (Imperial–US): N of them.
   if (need.canFlOz && need.cans && p.ml && canMatchesFlOz(p.ml, need.canFlOz)) {
+    return { packs: need.cans, totalCad: round2(need.cans * p.priceCad), leftover: 0, leftoverShare: 0, byWeight: false };
+  }
+  // k2 r3 (f): "N oz can" and this can is the standard size, or (as a fallback cover) 0 to +10% over N × 28.4 ml: N of them.
+  if (need.canOz && need.cans && p.ml && canMatchesOz(p.ml, need.canOz)) {
     return { packs: need.cans, totalCad: round2(need.cans * p.priceCad), leftover: 0, leftoverShare: 0, byWeight: false };
   }
   if (need.printed && need.g && !trayGrams(p)) return null;
@@ -904,7 +1100,9 @@ function sizeText(r: Ranked): string {
 export function pickReason(r: Ranked, line: NeedLine, rivals: number, next?: Ranked): string {
   const parts = [`${r.cover.packs}× ${sizeText(r)}`];
   const u = unitLabel(r.unit);
-  if (u) parts.push(u);
+  // k2: a multi-buy is shown as the deal itself, not as a single-item price.
+  if (r.cover.deal) parts.push(r.cover.deal);
+  else if (u) parts.push(u);
   parts.push(`$${r.cover.totalCad.toFixed(2)} total`);
   let why = `Cheapest exact match: ${parts.join(" · ")} covers ${describeNeed(line)}`;
   why += rivals > 1 ? `; lowest total of ${rivals} exact matches` : "; only exact match found";
@@ -963,7 +1161,7 @@ export function pickExact(input: PickInput): PickResult {
       if (shields.some((reason) => !reason.endsWith("no ingredient list to check"))) realShieldHits++;
       continue;
     }
-    const v = compare(line.name, product, line.aisle, { canOk });
+    const v = compare(line.name, product, line.aisle, { canOk, unit: line.unit });
     if (v.blocked.length) continue;
     const cover = coverNeed(product, line, gramsPerCup);
     const notes = [...v.differs, ...v.missing];
@@ -994,6 +1192,22 @@ export function pickExact(input: PickInput): PickResult {
   if (canNeed.canFlOz && ranked.some((r) => r.product.ml && canMatchesFlOz(r.product.ml, canNeed.canFlOz!))) {
     ranked = ranked.filter((r) => r.product.ml && canMatchesFlOz(r.product.ml, canNeed.canFlOz!));
   }
+  // k2 r3: table size first (cheapest among ±1 ml matches); only if none exist, 0 to +10% over (cheapest among those).
+  if (canNeed.canOz) {
+    const table = ranked.filter((r) => r.product.ml && canMatchesOzTable(r.product.ml, canNeed.canOz!));
+    if (table.length) ranked = table;
+    else {
+      const over = ranked.filter((r) => r.product.ml && canMatchesOzOver(r.product.ml, canNeed.canOz!));
+      if (over.length) ranked = over;
+    }
+  }
+  // k2 (e) / r2: on a canned/jarred line, or when the form is the product, a title with no form only
+  // competes when no candidate names the matching form. (Different forms were already refused in compare.)
+  const needForms = productForms(line.name);
+  if (needForms.size && formRuleApplies(line, need.category)) {
+    const matching = ranked.filter((r) => [...productForms(r.product.name)].some((f) => needForms.has(f)));
+    if (matching.length) ranked = matching;
+  }
 
   // Ground meat with no grade: regular / medium / unlabelled first. Lean only when that's all there is,
   // and then the cheapest grade, with the reason on the line.
@@ -1019,7 +1233,14 @@ export function pickExact(input: PickInput): PickResult {
     const known = amounts.filter((n) => n > 0);
     const spread = known.length === amounts.length && known.length ? Math.max(...known) / Math.min(...known) : 1;
     const labels = new Set(ranked.map((r) => r.product.sizeLabel));
-    if (spread > 1.25 || (known.length !== amounts.length && labels.size > 1)) ambiguity = `The recipe says "${line.unit}" with no size, and this store sells more than one size`;
+    if (spread > 1.25 || (known.length !== amounts.length && labels.size > 1)) {
+      const unit = (line.unit ?? "").trim();
+      const item = (line.name ?? "").trim() || "this item";
+      // k2 r2: a no-unit can line must name the item and ask which size; never `"" with no size`.
+      ambiguity = unit
+        ? `The recipe says "${unit}" with no size, and this store sells more than one size`
+        : `Which size of ${item}? The recipe doesn't give a size, and this store sells more than one`;
+    }
   }
   if (!ambiguity && !generic && ranked.length > 1 && (need.category === "meat" || need.category === "seafood")) {
     const attrs = ranked.map((r) => parseAttrs(r.product.name));

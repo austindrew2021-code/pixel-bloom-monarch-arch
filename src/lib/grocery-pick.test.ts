@@ -145,9 +145,14 @@ test("5 for $3.99 covers the meal cheaper than two 3-packs", () => {
     packageSizing: "3 pk",
     pricing: { price: "5.99" },
   });
-  const pick = pickCheapestEnough({ name: "avocado", qty: 4, unit: "", aisle: "Produce" }, [three!, loose!]);
+  // k2 (a) flips this from need 4 (old: bought 5 for $3.99): a deal applies only when the need is >= N.
+  const pick = pickCheapestEnough({ name: "avocado", qty: 5, unit: "", aisle: "Produce" }, [three!, loose!]);
   assert.match(pick!.product.name, /Hass Avocado$/);
   assert.equal(pick!.cover.totalCad, 3.99);
+  // Need 4 < 5: the regular price, 4 × $1.69, and no extra avocado bought.
+  const four = pickCheapestEnough({ name: "avocado", qty: 4, unit: "", aisle: "Produce" }, [three!, loose!]);
+  assert.equal(four!.cover.totalCad, 6.76);
+  assert.equal(four!.cover.packs, 4);
 });
 
 test("was price and unit price are not what you pay", () => {

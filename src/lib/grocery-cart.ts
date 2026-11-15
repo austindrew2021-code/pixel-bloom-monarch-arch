@@ -106,6 +106,64 @@ export function fillingLabel(heliosStore: boolean, cartsOff: boolean): string {
   return heliosStore && cartsOff ? "Saving your list…" : "Filling the cart…";
 }
 
+/**
+ * k2: what Fill says when it added nothing (and no store check stopped it). Never "Cart is filling" or
+ * "Cart ready": it says "Nothing added yet." plus the specific reason when there is one.
+ */
+/** k2 r3: the "N items need your pick: a, b, c…" clause. An ellipsis already ends the sentence — never "…." */
+export function itemsNeedPickText(names: string[]): string {
+  if (!names.length) return "";
+  const shown = names.slice(0, 3).join(", ");
+  const more = names.length > 3;
+  const verb = names.length === 1 ? "item needs" : "items need";
+  return `${names.length} ${verb} your pick (no exact match): ${shown}${more ? "…" : "."}`;
+}
+
+export function nothingAddedText(reason: { alreadyInBag?: boolean; unsure?: string[]; noPicks?: boolean } = {}): string {
+  if (reason.alreadyInBag) return "Nothing added yet. Everything on this list is already in your bag.";
+  const unsure = reason.unsure ?? [];
+  if (unsure.length) return `Nothing added yet. ${itemsNeedPickText(unsure)}`;
+  if (reason.noPicks) return "Nothing added yet. Pick a match for each item first.";
+  return "Nothing added yet.";
+}
+
+/**
+ * k2 r3: a failed store-cart add. One closing period. Never "Cart ready".
+ * If some packs made it in, say how many of the wanted packs did.
+ */
+export function storeAddFailedText(partial: { added?: number; wanted?: number } = {}): string {
+  const added = partial.added ?? 0;
+  const wanted = partial.wanted ?? 0;
+  if (added > 0 && wanted > added) {
+    return `Couldn't add that to the store cart. ${added} of ${wanted} ${wanted === 1 ? "pack" : "packs"} made it in.`;
+  }
+  return "Couldn't add that to the store cart.";
+}
+
+export function packsInCartText(n: number, storeName: string): string {
+  return `${n} ${n === 1 ? "pack is" : "packs are"} in the ${storeName} cart.`;
+}
+
+export function packCountOf(items: { packs?: number }[]): number {
+  return items.reduce((n, item) => n + (item.packs || 1), 0);
+}
+
+/**
+ * k2 r3: add one pack at a time and STOP at the first failure (no further add or create retries).
+ * `addOne` should return whether that pack was added to the store cart.
+ */
+export async function addUntilFirstFailure<T>(
+  items: T[],
+  addOne: (item: T) => Promise<boolean>,
+): Promise<{ added: number; wanted: number }> {
+  let added = 0;
+  for (const item of items) {
+    if (!(await addOne(item))) break;
+    added++;
+  }
+  return { added, wanted: items.length };
+}
+
 /** r3: store-check wording. 429 is the store being busy, not a person check. */
 export function storeCheckNotice(check: "person" | "busy" | undefined, filling: boolean): string {
   if (check === "busy") return "The store is busy, try again in a minute.";

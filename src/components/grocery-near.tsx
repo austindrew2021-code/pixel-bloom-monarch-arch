@@ -1,6 +1,6 @@
 import { Check, ChevronLeft, Heart, MapPin, ShoppingBag } from "lucide-react";
 import { groceryProfile } from "@/lib/grocery-prefs";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
@@ -15,7 +15,7 @@ import {
   type GroceryPick,
   type StoreOption,
 } from "@/lib/grocery-pick";
-import { addToStoreCart, cartFillAnnounced, fillingLabel, storeCanHoldCart, storeCartOff, storeCartOpenUrl, storeCartStatus, storeCheckNotice } from "@/lib/grocery-cart";
+import { addToStoreCart, addUntilFirstFailure, cartFillAnnounced, fillingLabel, itemsNeedPickText, nothingAddedText, packCountOf, packsInCartText, storeAddFailedText, storeCanHoldCart, storeCartOff, storeCartOpenUrl, storeCartStatus, storeCheckNotice } from "@/lib/grocery-cart";
 import {
   FALLBACK_COORDS,
   fetchNearbyStores,
@@ -174,6 +174,7 @@ function OrderSheet({
     () => (store ? matchCart(store, lines, profile) : { items: [], totalCad: 0 }),
     [store, lines, profile],
   );
+  const filledPacksRef = useRef(0);
   const [sent, setSent] = useState<Set<string>>(new Set());
   const [chosen, setChosen] = useState<Record<string, StoreOption>>({});
   const [viewing, setViewing] = useState<GroceryPick | null>(null);
@@ -364,9 +365,19 @@ function OrderSheet({
     return result.ok;
   }
 
-  /** Fills what it can. Returns false when a store check stopped it (nothing is added then). */
-  async function addAll(): Promise<boolean> {
-    if (leftover.length === 0 || addingAll) return true;
+  /**
+   * Fills what it can. Returns true only when at least one pack was added to the store cart
+   * (or, with carts off, when the list was packed). False when a store check stopped it
+   * (r3: only the notice shows), when nothing was added (k2: "Nothing added yet."), or when
+   * the store-cart add failed (k2 r2: "Couldn't add that to the store cart"; never "Cart ready").
+   * `onFirstPick` runs once, after the first successful store add (the "Filling your cart" ping).
+   */
+  async function addAll(onFirstPick?: () => Promise<void> | void): Promise<boolean> {
+    if (addingAll) return false;
+    if (leftover.length === 0) {
+      toast(nothingAddedText({ alreadyInBag: true }));
+      return false;
+    }
     setAddingAll(true);
     setStoreAsk("");
     try {
@@ -403,7 +414,6 @@ function OrderSheet({
         .map((item) => nextChosen[pickKey(item)])
         .filter((option): option is StoreOption => Boolean(option))
         .map((option) => ({ id: option.id, packs: option.packs, addUrl: option.addUrl }));
-      const ok = !blocked && packed.length ? await pushStore(packed, merged) : false;
       if (!blocked) packBag(storeCartId, merged);
       if (chosenItems.length) {
         useSpoonful.getState().rememberBag(
@@ -413,23 +423,45 @@ function OrderSheet({
           }),
         );
       }
-      const askNote = unsure.length
-        ? ` ${unsure.length} ${unsure.length === 1 ? "item needs" : "items need"} your pick (no exact match): ${unsure
-            .map((item) => item.name)
-            .slice(0, 3)
-            .join(", ")}${unsure.length > 3 ? "…" : ""}.`
-        : "";
+      const askNote = unsure.length ? ` ${itemsNeedPickText(unsure.map((item) => item.name))}` : "";
       setCartsOff(storeCartOff());
       // r3: a store check shows only the notice above the button; no fill or cart toast.
       if (blocked) return false;
-      toast(
-        (ok
-              ? `${packed.length} packs are in the ${picked.name} cart.`
-              : storeCartOff()
-                ? `List packed for ${picked.name}. Store carts aren’t available in Spoonful yet — your list is saved.`
-                : `List packed for ${picked.name}. Pay keeps it on the store screen.`) + askNote,
-      );
-      return true;
+      // k2: 0 adds outside a store check: say so, with the reason; no cart wording.
+      if (chosenItems.length === 0) {
+        toast(nothingAddedText({ unsure: unsure.map((item) => item.name) }));
+        return false;
+      }
+      // Carts off: the list is packed; no store add, so no Filling ping and no Cart ready (fillAndNotify returns early).
+      if (storeCartOff() || !storeCanHoldCart(picked)) {
+        toast(
+          (storeCartOff()
+            ? `List packed for ${picked.name}. Store carts aren’t available in Spoonful yet — your list is saved.`
+            : `List packed for ${picked.name}. Pay keeps it on the store screen.`) + askNote,
+        );
+        return true;
+      }
+      // k2 r3: add one pack at a time and STOP at the first failed add or create (no further requests
+      // onto a refusing store). The Filling ping waits for the first successful store add. Pack counts
+      // are the sum of packs, not the number of lines. Never "Cart ready" on a failure.
+      const wantedPacks = packCountOf(packed);
+      const { added } = await addUntilFirstFailure(packed, async (item) => {
+        const ok = await pushStore([item], merged);
+        if (ok && onFirstPick) {
+          const announce = onFirstPick;
+          onFirstPick = undefined;
+          await announce();
+        }
+        return ok;
+      });
+      const addedPacks = packCountOf(packed.slice(0, added));
+      if (addedPacks === wantedPacks) {
+        filledPacksRef.current = addedPacks;
+        toast(packsInCartText(addedPacks, picked.name) + askNote);
+        return true;
+      }
+      toast(storeAddFailedText({ added: addedPacks, wanted: wantedPacks }) + askNote);
+      return false;
     } finally {
       setAddingAll(false);
     }
@@ -444,16 +476,24 @@ function OrderSheet({
         await addAll();
         return;
       }
-      await enablePush();
-      notifyNative("Filling your cart", `Spoonful is packing ${picked.name}. We'll ping you when it's ready to review.`);
-      pushNote("Filling your cart", `Packing ${picked.name}. We'll ping you when it's ready.`);
-      const filled = await addAll();
+      // k2 r2: the "Filling your cart" ping waits for the first successful store add, so a failed or empty fill never sends it.
+      const filled = await addAll(async () => {
+        await enablePush();
+        notifyNative("Filling your cart", `Spoonful is packing ${picked.name}. We'll ping you when it's ready to review.`);
+        pushNote("Filling your cart", `Packing ${picked.name}. We'll ping you when it's ready.`);
+      });
       // r3: stopped by a store check (0 adds): no "Cart ready" ping and no "Cart is filling" toast.
+      // k2: the same for any fill that added nothing (addAll already said "Nothing added yet." and why).
       if (!filled || storeCartOff()) return;
-      const n = cart.items.length;
-      notifyNative("Cart ready to review", `${n} packs are in the ${picked.name} bag. Open Shop when you want to check out.`);
-      pushNote("Cart ready to review", `${n} packs at ${picked.name}.`);
+      const n = filledPacksRef.current;
+      notifyNative("Cart ready to review", `${n} ${n === 1 ? "pack is" : "packs are"} in the ${picked.name} bag. Open Shop when you want to check out.`);
+      pushNote("Cart ready to review", `${n} ${n === 1 ? "pack" : "packs"} at ${picked.name}.`);
       toast("Cart is filling. You can put the phone down — we'll ping you.");
+      return;
+    }
+    // k2: nothing picked means nothing to fill; no "Filling" ping or toast.
+    if (Object.keys(chosen).length === 0) {
+      toast(nothingAddedText({ noPicks: true }));
       return;
     }
     await enablePush();
@@ -638,7 +678,7 @@ function OrderSheet({
                           <p className="text-xs text-muted-foreground">
                             Need {formatQty(item.qty, item.unit)}
                             {pick
-                              ? ` · buy ${pick.packs}× ${pick.sizeLabel} · $${pick.totalCad.toFixed(2)}`
+                              ? ` · buy ${pick.packs}× ${pick.sizeLabel}${pick.dealLabel ? ` · ${pick.dealLabel}` : ""} · $${pick.totalCad.toFixed(2)}`
                               : item.matched
                                 ? ` · buy ${item.packs}× ${item.pickSize} · $${item.pickCad.toFixed(2)}`
                                 : ""}
@@ -772,8 +812,9 @@ function OptionsPane({
                 ) : null}
                 <p className="truncate font-medium">{option.name}</p>
                 <p className="text-xs text-muted-foreground">
-                  {option.packs}× {option.sizeLabel} · ${option.totalCad.toFixed(2)}
-                  {option.unitPrice ? ` · ${option.unitPrice}` : option.unitHint ? ` · ${option.unitHint}` : ""}
+                  {option.packs}× {option.sizeLabel}
+                  {option.dealLabel ? ` · ${option.dealLabel}` : ""} · ${option.totalCad.toFixed(2)}
+                  {option.unitPrice ? ` · ${option.unitPrice}` : option.unitHint && !option.dealLabel ? ` · ${option.unitHint}` : ""}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {option.inStock ? "In stock" : "May be low"} · {option.why}
@@ -801,7 +842,8 @@ function OptionsPane({
               </p>
               <p className="truncate font-medium">{choice.name}</p>
               <p className="text-xs text-muted-foreground">
-                {choice.packs}× {choice.sizeLabel} · ${choice.totalCad.toFixed(2)}
+                {choice.packs}× {choice.sizeLabel}
+                {choice.dealLabel ? ` · ${choice.dealLabel}` : ""} · ${choice.totalCad.toFixed(2)}
                 {choice.unitPrice ? ` · ${choice.unitPrice}` : ""}
               </p>
               <Button

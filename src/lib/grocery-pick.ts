@@ -50,6 +50,8 @@ export type StoreOption = {
   pinnedUpc?: string;
   /** Set on a labelled choice (status "ask"): what differs from the recipe. */
   choiceLabel?: string;
+  /** k2: the multi-buy that priced this option ("5 for $3.99"); absent when the regular price applies. */
+  dealLabel?: string;
 };
 
 const OZ_G = 28.35;
@@ -120,7 +122,7 @@ export function needEach(qty: number, unit: string): number | null {
   return null;
 }
 
-type Cover = { packs: number; totalCad: number; leftover: number; leftoverShare?: number; byWeight?: boolean };
+type Cover = { packs: number; totalCad: number; leftover: number; leftoverShare?: number; byWeight?: boolean; deal?: string };
 
 /** Dollars on a shelf card. Unit prices, "was" prices, and "save $2" are not the pack you pay. */
 export function lowestShelfPrice(text: string): number | null {
@@ -376,6 +378,11 @@ export function normalizeKey(name: string): string {
     .replace(/\b(the|a|an)\b/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/** k2 r3: "applesauce" is "apple sauce" both ways. Only paste/sauce/puree, so "wholesome" is not "whole". */
+function splitClosedForm(text: string): string {
+  return text.replace(/\b([a-z]{3,})(sauce|paste|pureed|puree)\b/g, "$1 $2");
 }
 
 const STOP_WORDS = new Set([
@@ -789,12 +796,14 @@ const PREPARED_GROUPS: { id: string; markers: string[] }[] = [
 /** Unicode vulgar fractions a cook types or pastes ("¾ lb"). */
 const NEED_FRACTIONS: Record<string, number> = { "⅛": 0.125, "¼": 0.25, "⅓": 1 / 3, "½": 0.5, "⅔": 2 / 3, "¾": 0.75, "⅞": 0.875 };
 const NEED_QTY = String.raw`(\d+(?:\.\d+)?\s+\d+\/\d+|\d+\s*[⅛¼⅓½⅔¾⅞]|[⅛¼⅓½⅔¾⅞]|\d+\/\d+|\d+(?:\.\d+)?)`;
-const NEED_UNIT = String.raw`(lbs?|pounds?|oz|ounces?|kg|kilograms?|g|grams?|ml|millilit(?:er|re)s?|l|lit(?:er|re)s?|cups?|tbsp|tablespoons?|tsp|teaspoons?|cans?|jars?|bottles?|pkgs?|packs?|packages?|bags?|boxes|box|ea|each|ct|count)`;
+const NEED_UNIT = String.raw`(lbs?|pounds?|oz|ounces?|kg|kilograms?|g|grams?|ml|millilit(?:er|re)s?|l|lit(?:er|re)s?|cups?|tbsp|tablespoons?|tsp|teaspoons?|cans?|tins?|jars?|bottles?|pkgs?|packs?|packages?|bags?|boxes|box|ea|each|ct|count)`;
 const NEED_TRAILING = new RegExp(String.raw`[\s,\-–—]*${NEED_QTY}\s*${NEED_UNIT}\.?\s*$`, "i");
 const NEED_LEADING = new RegExp(String.raw`^\s*${NEED_QTY}\s*${NEED_UNIT}\.?(?:\s+of)?\s+`, "i");
 const NEED_UNIT_CANON: Record<string, string> = {
   pound: "lb", pounds: "lb", lbs: "lb", ounce: "oz", ounces: "oz", kilogram: "kg", kilograms: "kg", gram: "g", grams: "g",
   tablespoon: "tbsp", tablespoons: "tbsp", teaspoon: "tsp", teaspoons: "tsp", package: "pkg", packages: "pkg", pkgs: "pkg",
+  // k2 (d): "2 tins" -> 2, tin (same downstream as can/cans: both are package units).
+  tins: "tin",
 };
 
 function needQtyValue(raw: string): number {
@@ -918,7 +927,7 @@ export function isRelevantProduct(productName: string, query: string, opts: { pl
 }
 
 function tokenize(text: string): string[] {
-  return normalizeKey(text)
+  return splitClosedForm(normalizeKey(text))
     .replace(/\b\d+([.,]\d+)?\s*(g|kg|ml|l|oz|lb|ct|pk|pack|count)?\b/g, " ")
     .split(/\s+/)
     .filter((token) => token.length > 2 && !STOP_WORDS.has(token) && !/^\d/.test(token));
@@ -973,7 +982,7 @@ function hayHas(hay: Set<string>, need: string): boolean {
 }
 
 function preparedGroups(text: string): Set<string> {
-  const hay = ` ${normalizeKey(text)} `;
+  const hay = ` ${splitClosedForm(normalizeKey(text))} `;
   const groups = new Set<string>();
   for (const group of PREPARED_GROUPS) {
     if (group.markers.some((marker) => hayHasMarker(hay, marker))) groups.add(group.id);
@@ -1143,10 +1152,12 @@ export function optionFromRank(
     imageUrl: product.imageUrl || "",
     addUrl: product.url || productSearchUrl(store, `${product.name} ${product.sizeLabel}`.trim()),
     inStock: product.inStock !== false,
-    why: reason ?? (index === 0 ? whyLine(line, product, cover) : `Exact match. ${cover.packs}× ${product.sizeLabel}${unit ? ` · ${unitLabel(unit)}` : ""} covers the meal.`),
+    why: reason ?? (index === 0 ? whyLine(line, product, cover) : `Exact match. ${cover.packs}× ${product.sizeLabel}${cover.deal ? ` · ${cover.deal}` : unit ? ` · ${unitLabel(unit)}` : ""} covers the meal.`),
     live,
-    unitPrice: unit ? unitLabel(unit) : undefined,
+    // k2: with a multi-buy the per-item regular unit price would read as what you pay; show the deal instead.
+    unitPrice: unit && !cover.deal ? unitLabel(unit) : undefined,
     pinnedUpc: gtin ? gtin : undefined,
+    ...(cover.deal ? { dealLabel: cover.deal } : {}),
   };
 }
 
@@ -1164,7 +1175,7 @@ export function choiceOption(
 function whyLine(need: CartNeed, product: StapleProduct, cover: Cover): string {
   const meal = [need.qty, need.unit].filter(Boolean).join(" ").trim() || "the meal";
   const unit = unitPriceOf(product as MatchProduct);
-  const u = unit ? ` (${unitLabel(unit)})` : "";
+  const u = cover.deal ? ` (${cover.deal})` : unit ? ` (${unitLabel(unit)})` : "";
   if (cover.packs === 1) {
     return `Cheapest exact match: ${product.sizeLabel}${u} covers ${meal}.`;
   }
