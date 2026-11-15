@@ -1,4 +1,5 @@
 import { Beef, Check, ChevronLeft, ChevronRight, Clock, Heart, Refrigerator, ShoppingBasket, Sparkles, UtensilsCrossed, WandSparkles } from "lucide-react";
+import { cooksLabel } from "@/lib/cook-label";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ChefPlateLine } from "@/components/chef-plate-line";
@@ -459,10 +460,10 @@ export function PlanView({ onOpenStore }: { onOpenStore: () => void }) {
                   )}
                   onClick={() => {
                     assignCook(todayDate, name);
-                    toast(`${name} cooks tonight`);
+                    toast(`${cooksLabel(name)} tonight`);
                   }}
                 >
-                  {name} cooks
+                  {cooksLabel(name)}
                 </button>
               ))}
             </div>

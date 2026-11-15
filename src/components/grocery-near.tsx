@@ -15,7 +15,7 @@ import {
   type GroceryPick,
   type StoreOption,
 } from "@/lib/grocery-pick";
-import { addToStoreCart, storeCanHoldCart, storeCartOff, storeCartOpenUrl } from "@/lib/grocery-cart";
+import { addToStoreCart, cartFillAnnounced, ensureStoreCart, fillingLabel, storeCanHoldCart, storeCartOff, storeCartOpenUrl } from "@/lib/grocery-cart";
 import {
   FALLBACK_COORDS,
   fetchNearbyStores,
@@ -92,7 +92,9 @@ export function GroceryNearCard() {
       <p className="text-xs font-medium uppercase tracking-[0.14em] text-spark">Nearby</p>
       <h2 className="mt-1 font-display text-2xl leading-tight">Send the list to a store</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        Open a store inside Spoonful. Fill cart packs the bag while you step away, then pings you when it’s ready to review.
+        {storeCartOff()
+          ? "Open a store inside Spoonful. Store carts aren’t available in Spoonful yet — your list is saved."
+          : "Open a store inside Spoonful. Fill cart packs the bag while you step away, then pings you when it’s ready to review."}
       </p>
       {/*
        * Said plainly, once, where the links are — not buried in a policy page.
@@ -185,6 +187,8 @@ function OrderSheet({
   const [storeCount, setStoreCount] = useState(0);
   const [payOpen, setPayOpen] = useState(false);
   const [storeAsk, setStoreAsk] = useState("");
+  // r2: carts off on the host (cart-disabled) → no "notify me" button and no promise of a ping.
+  const [cartsOff, setCartsOff] = useState(storeCartOff());
   // Above the `if (!store) return null` below, and it has to stay there: read
   // after the early return, this hook only runs on the renders where a store is
   // picked, so choosing one changes the hook count between renders and React
@@ -201,7 +205,23 @@ function OrderSheet({
     setStoreCount(0);
     setPayOpen(false);
     setStoreAsk("");
+    setCartsOff(storeCartOff());
   }, [store?.id]);
+
+  useEffect(() => {
+    // One cart lookup when a store opens (a saved cart is reused, no call), so a cart-disabled host
+    // is known before any button promises a ping.
+    if (!store || !storeCanHoldCart(store) || storeCartOff()) return;
+    let live = true;
+    void ensureStoreCart(store)
+      .catch(() => null)
+      .then(() => {
+        if (live) setCartsOff(storeCartOff());
+      });
+    return () => {
+      live = false;
+    };
+  }, [store]);
 
   if (!store) return null;
   const picked = store;
@@ -216,6 +236,7 @@ function OrderSheet({
   const checkoutHref = storeCartOpenUrl(picked);
   const loginHref = storeLoginUrl(picked);
   const helios = isHeliosStore(picked);
+  const noPing = !cartFillAnnounced(helios, cartsOff || storeCartOff());
   const pcxApp = helios && hasStoreApp();
 
   function bagItems(chosenMap: Record<string, StoreOption> = chosen) {
@@ -315,6 +336,7 @@ function OrderSheet({
     setViewing(null);
     const left = leftover.filter((row) => pickKey(row) !== pickKey(item)).length;
     void pushStore([{ id: option.id, packs: option.packs, addUrl: option.addUrl }], nextMap).then((ok) => {
+      setCartsOff(storeCartOff());
       toast(
         ok
           ? left > 0
@@ -402,6 +424,7 @@ function OrderSheet({
             .slice(0, 3)
             .join(", ")}${unsure.length > 3 ? "…" : ""}.`
         : "";
+      setCartsOff(storeCartOff());
       toast(
         blocked
           ? "Store check — finish it on the store page, then fill again."
@@ -417,17 +440,27 @@ function OrderSheet({
   }
 
   async function fillAndNotify() {
-    await enablePush();
-    notifyNative("Filling your cart", `Spoonful is packing ${picked.name}. We'll ping you when it's ready to review.`);
-    pushNote("Filling your cart", `Packing ${picked.name}. We'll ping you when it's ready.`);
     if (helios) {
+      // Carts off on the host (cart-disabled): no "filling" toasts or pings, only addAll's saved-list message.
+      if (storeCanHoldCart(picked) && !storeCartOff()) await ensureStoreCart(picked);
+      if (!cartFillAnnounced(helios, storeCartOff())) {
+        await addAll();
+        return;
+      }
+      await enablePush();
+      notifyNative("Filling your cart", `Spoonful is packing ${picked.name}. We'll ping you when it's ready to review.`);
+      pushNote("Filling your cart", `Packing ${picked.name}. We'll ping you when it's ready.`);
       await addAll();
+      if (storeCartOff()) return;
       const n = cart.items.length;
       notifyNative("Cart ready to review", `${n} packs are in the ${picked.name} bag. Open Shop when you want to check out.`);
       pushNote("Cart ready to review", `${n} packs at ${picked.name}.`);
       toast("Cart is filling. You can put the phone down — we'll ping you.");
       return;
     }
+    await enablePush();
+    notifyNative("Filling your cart", `Spoonful is packing ${picked.name}. We'll ping you when it's ready to review.`);
+    pushNote("Filling your cart", `Packing ${picked.name}. We'll ping you when it's ready.`);
     packBag(storeCartId, chosen, { handsOff: true });
     if (openStoreCart(tillUrl(checkoutHref), storeCartId || "")) {
       toast("Filling in the background. Sign in on the store if it asks — after that, leave the phone. We'll ping you.");
@@ -500,7 +533,13 @@ function OrderSheet({
             <p className="text-xs font-medium uppercase tracking-[0.14em] text-spark">Checkout</p>
             <h2 className="mt-1 font-display text-2xl leading-tight">{store.name}</h2>
             <p className="mt-1 text-sm text-muted-foreground">
+              {noPing ? (
+                `Store carts aren’t available in Spoonful yet — your list is saved. Pick each item below, then pay on ${store.name}’s site.`
+              ) : (
+                <>
               Tap Fill cart and put the phone down. Spoonful packs the bag, then pings you when it’s ready to review. Superstore goes in through the store’s own cart. Co-op, Sobeys, and Walmart stay on one aisle page so the store doesn’t lock a check.
+                </>
+              )}
             </p>
             {cart.items.length === 0 ? (
               <p className="mt-4 text-sm">No items yet. Build the shop list from tonight first.</p>
@@ -515,7 +554,7 @@ function OrderSheet({
                     {storeAsk}
                   </p>
                 ) : null}
-                {leftover.length > 0 ? (
+                {leftover.length > 0 && !noPing ? (
                   <Button
                     className="mt-3 w-full"
                     variant="spark"
@@ -525,15 +564,15 @@ function OrderSheet({
                   >
                     <ShoppingBag />
                     {addingAll
-                      ? "Filling the cart…"
+                      ? fillingLabel(helios, storeCartOff())
                       : remembered > 0
                         ? `Fill like last time — notify me (${remembered} remembered)`
                         : `Fill cart — notify me (${leftover.length})`}
                   </Button>
                 ) : null}
                 <Button
-                  className={leftover.length > 0 ? "mt-2 w-full" : "mt-3 w-full"}
-                  variant={leftover.length > 0 ? "secondary" : "spark"}
+                  className={leftover.length > 0 && !noPing ? "mt-2 w-full" : "mt-3 w-full"}
+                  variant={leftover.length > 0 && !noPing ? "secondary" : "spark"}
                   onClick={openCheckout}
                   disabled={cart.items.length === 0}
                   data-testid="grocery-open-cart"
@@ -545,7 +584,9 @@ function OrderSheet({
                   <div className="mt-3 rounded-2xl bg-background p-3 shadow-[var(--shadow-border)]" data-testid="grocery-pay-choice">
                     <p className="text-sm font-medium">How do you want to pay?</p>
                     <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                      {helios
+                      {helios && noPing
+                        ? "Store carts aren’t available in Spoonful yet — your list is saved. Pay on the store’s site."
+                        : helios
                         ? "Superstore holds the bag on their cart. Fill cart packs it from here — you can leave, then pay when we ping you."
                         : "Co-op, Sobeys, Walmart, and Voilà open inside Spoonful. Sign in once if the store asks. After the aisle looks like a store, Spoonful fills the cart on that same page. If a check appears, finish it yourself — Spoonful stops until you tap Continue, so the store doesn’t see more tries."}
                     </p>

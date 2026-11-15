@@ -1,4 +1,5 @@
 import { Check, Copy, Plus, Refrigerator, RotateCcw, Share2, X } from "lucide-react";
+import { splitTypedAmount } from "@/lib/grocery-pick";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { GroceryNearCard } from "@/components/grocery-near";
@@ -371,7 +372,9 @@ export function ShopView({ onOpenStore }: { onOpenStore: () => void }) {
         className="mt-4 flex min-w-0 gap-2"
         onSubmit={(e) => {
           e.preventDefault();
-          addExtraGrocery(newItem, "Other");
+          // r2: "salmon fillets ¾ lb" → salmon fillets, 0.75 lb (shown in the normal amount format).
+          const typed = splitTypedAmount(newItem);
+          addExtraGrocery(typed.name, "Other", typed.amount);
           setNewItem("");
         }}
       >

@@ -451,6 +451,99 @@ export function searchRecipes(query: string, pool: Recipe[] = RECIPES): Recipe[]
   return scored.map((x) => x.recipe);
 }
 
+/** Tab search: like normalize, but folds accents (à→a, é→e) instead of deleting the letter. */
+function foldNormalize(q: string): string {
+  return normalize(q.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+}
+
+/** berries→berry, ribs→rib, dishes→dish, eggs→egg; short words and -ss left alone. */
+function stemWord(w: string): string {
+  if (w.length > 4 && w.endsWith("ies")) return `${w.slice(0, -3)}y`;
+  if (w.length > 4 && /(?:ch|sh|x|s|z)es$/.test(w)) return w.slice(0, -2);
+  if (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") && !w.endsWith("us")) return w.slice(0, -1);
+  return w;
+}
+
+type TabText = { nameWords: string[]; hayWords: Set<string>; hayList: string[]; oldHay: string };
+const tabTextCache = new WeakMap<Recipe, TabText>();
+
+function tabText(recipe: Recipe): TabText {
+  let t = tabTextCache.get(recipe);
+  if (!t) {
+    const hay = foldNormalize(
+      [recipe.name, recipe.description, recipe.cuisine ?? "", ...(recipe.tags ?? []), ...(recipe.aliases ?? []), ...recipe.ingredients.map((i) => i.name)].join(" "),
+    );
+    const hayList = hay.split(" ").filter(Boolean).map(stemWord);
+    t = { nameWords: foldNormalize(recipe.name).split(" ").filter(Boolean).map(stemWord), hayWords: new Set(hayList), hayList, oldHay: recipeHaystack(recipe) };
+    tabTextCache.set(recipe, t);
+  }
+  return t;
+}
+
+/**
+ * Recipes tab search (f3 r2). Inclusion is never narrower than searchRecipes (its substring
+ * matches stay in, ranked last); whole words and the as-you-type prefix only decide the order.
+ * Tiers, best first:
+ *   0 name is the query; 1 name holds the query as a word run; 2 every query word is a name word;
+ *   3–5 the same three with the last word as a typed prefix ("chic" → chicken, "rib" → Ribollita);
+ *   6 every query word is a word anywhere (description, tags, ingredients); 7 the same with the prefix;
+ *   8 any query word or synonym is a word somewhere; 9 substring only (old behaviour, e.g. Caribbean).
+ * Words fold plurals (berries=berry, ribs=rib) and accents (à=a). The last word, while still being
+ * typed (no trailing space), also matches as a prefix ("chic" → chicken).
+ * The Plan picker keeps searchRecipes() unchanged.
+ */
+export function recipeSearchTier(query: string): (recipe: Recipe) => number | null {
+  const phrase = foldNormalize(query);
+  if (!phrase) return () => 0;
+  const tokens = phrase.split(" ").filter(Boolean).map(stemWord);
+  const typing = !/\s$/.test(query);
+  const last = tokens.length - 1;
+  const raw = phrase.split(" ").filter(Boolean);
+  const exactHit = (i: number, w: string) => w === tokens[i];
+  const prefixHit = (i: number, w: string) => exactHit(i, w) || (typing && i === last && (w.startsWith(raw[i]!) || w.startsWith(tokens[i]!)));
+  const oldTerms = expandQuery(query);
+  const synonymWords = oldTerms.filter((t) => !phrase.includes(t)).map((t) => foldNormalize(t).split(" ").map(stemWord));
+  const has = (hit: (i: number, w: string) => boolean, i: number, words: Iterable<string>) => {
+    for (const w of words) if (hit(i, w)) return true;
+    return false;
+  };
+  const nameTier = (name: string[], hit: (i: number, w: string) => boolean): number | null => {
+    if (name.length === tokens.length && tokens.every((_, i) => hit(i, name[i]!))) return 0;
+    for (let s = 0; s + tokens.length <= name.length; s++) if (tokens.every((_, i) => hit(i, name[s + i]!))) return 1;
+    if (tokens.every((_, i) => has(hit, i, name))) return 2;
+    return null;
+  };
+  return (recipe) => {
+    const t = tabText(recipe);
+    // Name: whole words (0–2), then with the last word as a typed prefix (3–5).
+    const exact = nameTier(t.nameWords, exactHit);
+    if (exact !== null) return exact;
+    const pre = typing ? nameTier(t.nameWords, prefixHit) : null;
+    if (pre !== null) return 3 + pre;
+    // Anywhere (description, tags, ingredients): every word whole (6), or with the prefix (7).
+    if (tokens.every((_, i) => has(exactHit, i, t.hayList))) return 6;
+    if (typing && tokens.every((_, i) => has(prefixHit, i, t.hayList))) return 7;
+    if (tokens.some((_, i) => t.hayList.some((w) => prefixHit(i, w)))) return 8;
+    if (synonymWords.some((ws) => ws.every((w) => t.hayWords.has(w)))) return 8;
+    if (oldTerms.some((term) => t.oldHay.includes(term))) return 9;
+    // Accent-folded substring ("souffle" in "soufflé"), still below every word match.
+    const folded = t.hayList.join(" ");
+    if ([phrase, ...raw.filter((w) => w.length > 1)].some((term) => folded.includes(term))) return 9;
+    return null;
+  };
+}
+
+/** Recipes tab: every match searchRecipes would show (and accent/prefix matches), best tier first, then A–Z. */
+export function searchRecipesTab(query: string, pool: Recipe[] = RECIPES): Recipe[] {
+  if (!foldNormalize(query)) return pool;
+  const tierOf = recipeSearchTier(query);
+  return pool
+    .map((recipe) => ({ recipe, tier: tierOf(recipe) }))
+    .filter((x): x is { recipe: Recipe; tier: number } => x.tier !== null)
+    .sort((a, b) => a.tier - b.tier || a.recipe.name.localeCompare(b.recipe.name))
+    .map((x) => x.recipe);
+}
+
 function railKey(s: string): string {
   return s.toLowerCase().replace(/['’]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
 }

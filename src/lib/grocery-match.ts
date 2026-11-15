@@ -920,12 +920,16 @@ export type PickInput = {
   gramsPerCup?: number;
 };
 
+/** Shown when every match was refused only because its ingredients couldn't be read (still fails closed). */
+export const UNCHECKED_LABEL_REASON = "We couldn't check what's in this, so we left it off to keep your settings safe.";
+
 export function pickExact(input: PickInput): PickResult {
   const { line, profile, gramsPerCup } = input;
   const need = parseAttrs(line.name);
   const covered: { product: MatchProduct; cover: Cover }[] = [];
   const near: { product: MatchProduct; cover: Cover | null; differs: string[]; lead?: string }[] = [];
   let shieldHits = 0;
+  let realShieldHits = 0;
   let unsized = 0;
   const generic = needsCutChoice(need);
   // A bare family name ("cheese") covers foods a cook wouldn't swap: ask which one.
@@ -937,6 +941,8 @@ export function pickExact(input: PickInput): PickResult {
     const shields = shieldBlocks(product, profile);
     if (shields.length) {
       shieldHits++;
+      // Only "no ingredient list to check" reasons: the label couldn't be read, not a real hit.
+      if (shields.some((reason) => !reason.endsWith("no ingredient list to check"))) realShieldHits++;
       continue;
     }
     const v = compare(line.name, product, line.aisle);
@@ -1069,6 +1075,7 @@ export function pickExact(input: PickInput): PickResult {
   if (generic) reason = `The recipe says "${line.name}" with no cut. Pick the cut you want; Spoonful won't guess.`;
   else if (ambiguity) reason = `${ambiguity}. Pick one; Spoonful won't guess.`;
   else if (unsized && !choices.length) reason = `Found the item but the store doesn't list a size, so Spoonful can't confirm it covers ${describeNeed(line)}.`;
+  else if (!choices.length && shieldHits && !realShieldHits) reason = UNCHECKED_LABEL_REASON;
   else if (!choices.length && shieldHits) reason = `Every match failed your allergy or diet settings. Nothing was picked.`;
   else if (!choices.length) reason = `Nothing on the shelf fits ${describeNeed(line)} at this store. Nothing was picked.`;
   else reason = `No exact match for ${describeNeed(line)}. Here ${choices.length === 1 ? "is the only close one" : `are the closest ${choices.length}`} of the same kind; nothing was picked.`;

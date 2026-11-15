@@ -96,6 +96,16 @@ export function storeCartOff(): boolean {
   return cartOff;
 }
 
+/** f3: whether "Cart is filling" toasts and pings may show. Never when the host answered cart-disabled. */
+export function cartFillAnnounced(heliosStore: boolean, cartsOff: boolean): boolean {
+  return !(heliosStore && cartsOff);
+}
+
+/** f3: in-progress label on the Fill cart button. With carts off it only packs the saved list. */
+export function fillingLabel(heliosStore: boolean, cartsOff: boolean): string {
+  return heliosStore && cartsOff ? "Saving your list…" : "Filling the cart…";
+}
+
 export function storeCanHoldCart(store: NearbyStore): boolean {
   return Boolean(pcxBannerFor(store));
 }

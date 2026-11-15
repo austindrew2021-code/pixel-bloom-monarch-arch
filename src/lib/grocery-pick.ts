@@ -785,6 +785,46 @@ const PREPARED_GROUPS: { id: string; markers: string[] }[] = [
   { id: "vegpepper", markers: ["bell pepper", "bell", "jalapeno", "habanero", "banana pepper", "sweet pepper"] },
 ];
 
+/** Unicode vulgar fractions a cook types or pastes ("¾ lb"). */
+const NEED_FRACTIONS: Record<string, number> = { "⅛": 0.125, "¼": 0.25, "⅓": 1 / 3, "½": 0.5, "⅔": 2 / 3, "¾": 0.75, "⅞": 0.875 };
+const NEED_QTY = String.raw`(\d+(?:\.\d+)?\s+\d+\/\d+|\d+\s*[⅛¼⅓½⅔¾⅞]|[⅛¼⅓½⅔¾⅞]|\d+\/\d+|\d+(?:\.\d+)?)`;
+const NEED_UNIT = String.raw`(lbs?|pounds?|oz|ounces?|kg|kilograms?|g|grams?|ml|millilit(?:er|re)s?|l|lit(?:er|re)s?|cups?|tbsp|tablespoons?|tsp|teaspoons?|cans?|jars?|bottles?|pkgs?|packs?|packages?|bags?|boxes|box|ea|each|ct|count)`;
+const NEED_TRAILING = new RegExp(String.raw`[\s,\-–—]*${NEED_QTY}\s*${NEED_UNIT}\.?\s*$`, "i");
+const NEED_LEADING = new RegExp(String.raw`^\s*${NEED_QTY}\s*${NEED_UNIT}\.?(?:\s+of)?\s+`, "i");
+const NEED_UNIT_CANON: Record<string, string> = {
+  pound: "lb", pounds: "lb", lbs: "lb", ounce: "oz", ounces: "oz", kilogram: "kg", kilograms: "kg", gram: "g", grams: "g",
+  tablespoon: "tbsp", tablespoons: "tbsp", teaspoon: "tsp", teaspoons: "tsp", package: "pkg", packages: "pkg", pkgs: "pkg",
+};
+
+function needQtyValue(raw: string): number {
+  const t = raw.trim();
+  const mixedSlash = t.match(/^(\d+(?:\.\d+)?)\s+(\d+)\/(\d+)$/);
+  if (mixedSlash) return Number(mixedSlash[1]) + Number(mixedSlash[2]) / Number(mixedSlash[3]);
+  const mixedGlyph = t.match(/^(\d+)\s*([⅛¼⅓½⅔¾⅞])$/);
+  if (mixedGlyph) return Number(mixedGlyph[1]) + NEED_FRACTIONS[mixedGlyph[2]!]!;
+  if (NEED_FRACTIONS[t] !== undefined) return NEED_FRACTIONS[t]!;
+  const slash = t.match(/^(\d+)\/(\d+)$/);
+  if (slash) return Number(slash[2]) ? Number(slash[1]) / Number(slash[2]) : 0;
+  return Number(t);
+}
+
+/**
+ * A typed or pasted line ("salmon fillets ¾ lb", "¾ lb salmon fillets") keeps its amount in the
+ * name. Move that amount into qty/unit so it doesn't become search words. Only when the line has no
+ * unit of its own (free text); structured recipe lines are returned unchanged. Never yields qty 0.
+ */
+export function normalizeNeedLine<T extends CartNeed>(line: T): T {
+  if ((line.unit ?? "").trim() || (Number(line.qty) || 1) !== 1) return line;
+  const name = line.name ?? "";
+  const m = name.match(NEED_TRAILING) ?? name.match(NEED_LEADING);
+  if (!m) return line;
+  const qty = needQtyValue(m[1]!);
+  const rest = name.replace(m[0], " ").replace(/\s+/g, " ").replace(/[\s,\-–—]+$/, "").trim();
+  if (!(qty > 0) || !Number.isFinite(qty) || !/[a-z]/i.test(rest)) return line;
+  const u = m[2]!.toLowerCase();
+  return { ...line, name: rest, qty, unit: NEED_UNIT_CANON[u] ?? u };
+}
+
 export function searchTermFor(name: string): string {
   return name
     .toLowerCase()
@@ -794,6 +834,17 @@ export function searchTermFor(name: string): string {
     .map((word) => (word.length > 4 && word.endsWith("s") && !word.endsWith("ss") ? word.slice(0, -1) : word))
     .join(" ")
     .slice(0, 80);
+}
+
+/**
+ * r2: a typed shop line ("salmon fillets ¾ lb") → name + amount for the list, so the row shows
+ * "0.75 lb"-style amounts like every other line. No amount found → just the name. Never qty 0.
+ */
+export function splitTypedAmount(text: string): { name: string; amount?: { qty: number; unit: string } } {
+  const name = text.trim();
+  const n = normalizeNeedLine({ name, qty: 1, unit: "", aisle: "Other" });
+  if (!n.unit || n.name === name || !(n.qty > 0)) return { name };
+  return { name: n.name, amount: { qty: n.qty, unit: n.unit } };
 }
 
 /** Overlay fill searches the ingredient, never a Superstore catalog SKU name. */
@@ -985,9 +1036,11 @@ export function matchCart(
 /** Catalog pick: the same exact-match rules as the live store search. */
 export function pickForLine(
   store: { brand: StoreBrand; name: string },
-  line: CartNeed,
+  rawLine: CartNeed,
   profile?: ShieldProfile,
 ): GroceryPick {
+  // r2: show the amount that was parsed out of the name ("salmon fillets", 0.75 lb), not the raw text.
+  const line = normalizeNeedLine(rawLine);
   const result = catalogPick(store, line, profile);
   const top = result.pick;
   if (!top) {
@@ -1058,7 +1111,8 @@ export function catalogChoices(
   return result.choices.map((c, index) => choiceOption(store, line, c, index, false));
 }
 
-export function catalogPick(store: { brand: StoreBrand; name: string }, line: CartNeed, profile?: ShieldProfile) {
+export function catalogPick(store: { brand: StoreBrand; name: string }, rawLine: CartNeed, profile?: ShieldProfile) {
+  const line = normalizeNeedLine(rawLine);
   const staple = matchStaple(line.name);
   const products = (staple?.products.filter((p) => p.brand === store.brand) ?? []) as MatchProduct[];
   return pickExact({ line, products, profile, gramsPerCup: staple?.gramsPerCup });

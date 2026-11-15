@@ -3,6 +3,7 @@ import {
   catalogPick,
   choiceOption,
   matchStaple,
+  normalizeNeedLine,
   optionFromRank,
   searchTermFor,
   shelfProduct,
@@ -111,7 +112,9 @@ export async function liveStoreOptions(input: LiveInput): Promise<StoreOption[]>
   return (await liveStoreResult(input)).options;
 }
 
-export async function liveStoreResult(input: LiveInput): Promise<LiveResult> {
+export async function liveStoreResult(rawInput: LiveInput): Promise<LiveResult> {
+  // "salmon fillets ¾ lb" typed as a name: the amount is qty/unit, not search words.
+  const input: LiveInput = { ...rawInput, line: normalizeNeedLine(rawInput.line) };
   const banner = pcxBannerFor(input.store);
   if (!banner || !pcxKey()) return catalogResult(input, "unavailable");
   const storeId =

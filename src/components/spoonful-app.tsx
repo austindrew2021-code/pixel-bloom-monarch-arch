@@ -40,6 +40,8 @@ import { rankForXp } from "@/lib/ranks";
 import { loadKitchenState, saveKitchenState } from "@/lib/kitchen-cloud";
 import { resolveMeal, useSpoonful, type TabId } from "@/lib/spoonful-store";
 import { isTesterUnlocked } from "@/lib/tester";
+import { gateView, runStartupGate } from "@/lib/gate-view";
+import { rehydrateOnce } from "@/lib/safe-rehydrate";
 import { normalizeTheme, themeById, type SkinPackId } from "@/lib/themes";
 import { isPreviewChrome } from "@/lib/preview-chrome";
 import { cn } from "@/lib/utils";
@@ -85,7 +87,8 @@ export function SpoonfulApp() {
   const startSkinTrial = useSpoonful((s) => s.startSkinTrial);
   const [editPins, setEditPins] = useState(false);
   const [unread, setUnread] = useState(0);
-  const [allowed, setAllowed] = useState(false);
+  // f3: null until the unlock check has run, so a cold start shows a splash, not the gate.
+  const [allowed, setAllowed] = useState<boolean | null>(null);
   const [previewChrome, setPreviewChrome] = useState(false);
   const streak = cookStreak([...cookedDates, ...streakSavedDates], isoDate());
   const rank = rankForXp(xp);
@@ -118,12 +121,19 @@ export function SpoonfulApp() {
       ];
 
   useEffect(() => {
-    setAllowed(isTesterUnlocked());
-    setPreviewChrome(isPreviewChrome());
+    // r2: fail closed. Locked, a throw, a failed kitchen load, or no answer in 3 s → the gate.
+    const cancel = runStartupGate({ check: isTesterUnlocked, startup: () => rehydrateOnce(useSpoonful), set: setAllowed });
+    try {
+      setPreviewChrome(isPreviewChrome());
+    } catch {
+      /* chrome detection is cosmetic */
+    }
+    return cancel;
   }, []);
 
   useEffect(() => {
-    void Promise.resolve(useSpoonful.persist.rehydrate()).then(async () => {
+    void rehydrateOnce(useSpoonful).then(async (loaded) => {
+      if (!loaded) return;
       const s = useSpoonful.getState();
       if (!s.fitnessSource) return;
       if (!s.syncAccess) s.setSyncAccess("while-using");
@@ -279,7 +289,28 @@ export function SpoonfulApp() {
   const look = themeById(theme);
   const shellStyle = { backgroundColor: look.swatch[0] };
 
-  if (!allowed) {
+  const gate = gateView(allowed);
+  if (gate === "splash") {
+    return (
+      <div
+        className="relative flex min-h-dvh items-center justify-center text-foreground"
+        data-theme={look.id}
+        style={shellStyle}
+        aria-busy="true"
+        data-testid="spoonful-splash"
+      >
+        <p className="spoonful-splash-mark font-display text-2xl opacity-70">Spoonful</p>
+        {/* r2: with no JavaScript the server HTML shows the gate (as main did), never the splash. */}
+        <noscript>
+          <style>{".spoonful-splash-mark{display:none}"}</style>
+          <div className="absolute inset-0">
+            <TesterGate onUnlock={() => setAllowed(true)} />
+          </div>
+        </noscript>
+      </div>
+    );
+  }
+  if (gate === "gate") {
     return (
       <div className="relative min-h-dvh text-foreground" data-theme={look.id} style={shellStyle}>
         <TesterGate onUnlock={() => setAllowed(true)} />

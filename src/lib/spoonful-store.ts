@@ -19,6 +19,8 @@ import { scaleQty } from "./cuisine.ts";
 import { hasStickNote, isPhraseRow, nameCarriesAmount, scaleStickNote } from "./phrase-qty.ts";
 import { portionSyncFor } from "./portion-sync.ts";
 import { ADDONS, RECIPES, recipeById } from "./recipes.ts";
+import { weeknightSafe } from "./sample-week.ts";
+import { safeRehydrate } from "./safe-rehydrate.ts";
 import {
   CHEF_FREE_WEEK,
   CHEF_PACK_15,
@@ -617,6 +619,12 @@ export const useSpoonful = create<SpoonfulState>()(
         if (nextGen) get().ensureProgram();
         if (sample) get().fillWeek(true);
         if (sample && nextGen) get().replateFromFuel(undefined, { notify: false });
+        if (sample) {
+          // f3: weeknight sample dinners stay at or under 60 minutes; long cooks go to the weekend.
+          const s = get();
+          const pool = allowedPool(s.unlocked, s.prefs, s.allergies, s.hidden, tableGoalOf(s.body, s.seats ?? []));
+          set({ meals: weeknightSafe(s.meals, weekDates(s.weekStart), recipeById, pool) });
+        }
       },
       setTab: (tab) => set({ tab }),
       setWeekStart: (weekStart) => {
@@ -2271,7 +2279,9 @@ if (typeof window !== "undefined") {
   // made while the store still holds its defaults writes those defaults over
   // the saved kitchen — and the rehydrate that follows then reads the wipe. It
   // cost a reloading cook their week, their log, and their spent Chef plates.
-  void useSpoonful.persist.rehydrate();
+  // r2: guarded. With storage blocked the persist API is missing; an unguarded call threw a
+  // TypeError here and the app never started (stuck on the splash). Same synchronous timing.
+  void safeRehydrate(useSpoonful);
   grandfatherSkins();
   rebaseActivity();
   try {
