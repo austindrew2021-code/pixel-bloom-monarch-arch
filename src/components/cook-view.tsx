@@ -1,4 +1,5 @@
 import { Check, ChevronLeft, ChevronRight, Pause, Play, Timer, Volume2, VolumeX, X } from "lucide-react";
+import { useBackToClose } from "@/lib/back-close";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,8 @@ function clock(total: number): string {
 }
 
 export function CookView({ meal, onClose }: { meal: PlannedMeal; onClose: () => void }) {
+  // r2: Android / browser Back closes Cook mode (same history entry as the recipe card).
+  useBackToClose(true, onClose);
   const resolved = resolveMeal(meal);
   const recipe = resolved.recipe;
   const household = useSpoonful((s) => s.household);

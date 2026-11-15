@@ -28,7 +28,8 @@ import { dotJoin, timeLabel } from "@/lib/recipe-time";
 import { lookupDish } from "@/lib/kitchen-ai";
 import { packLabel, RECIPES, recipeById } from "@/lib/recipes";
 import { mealsFromPantry } from "@/lib/pantry-match";
-import { recipesByCuisine, searchRecipes } from "@/lib/search";
+import { recipeSearchTier, recipesByCuisine, searchRecipesTab } from "@/lib/search";
+import { useBackToClose } from "@/lib/back-close";
 import { recipeSafe } from "@/lib/shield";
 import { unlockedRecipes, useSpoonful } from "@/lib/spoonful-store";
 import type { PlannedMeal, Protein, Recipe } from "@/lib/types";
@@ -184,7 +185,8 @@ export function RecipesView({ onOpenStore }: { onOpenStore: () => void }) {
     if (shelf === "all") pool = RECIPES;
     else if (shelf) pool = recipesInCollection(shelf, pool);
     else if (rail) pool = recipesByCuisine(rail, pool);
-    if (query.trim()) pool = searchRecipes(query, pool);
+    if (query.trim()) pool = searchRecipesTab(query, pool);
+    const tierOf = query.trim() ? recipeSearchTier(query) : null;
     const pantryIds =
       more === "pantry"
         ? new Set(mealsFromPantry(pantry.map((x) => x.name), RECIPES, 40).map((h) => h.recipeId))
@@ -227,10 +229,15 @@ export function RecipesView({ onOpenStore }: { onOpenStore: () => void }) {
     copy.sort((a, b) => {
       if (sort === "time") return a.minutes - b.minutes;
       if (sort === "protein") return b.nutrition.protein - a.nutrition.protein;
+      // With a search, the best name matches lead ("prime rib" → Holiday prime rib), then A–Z.
+      if (tierOf) return (tierOf(a) ?? 9) - (tierOf(b) ?? 9) || a.name.localeCompare(b.name);
       return a.name.localeCompare(b.name);
     });
     return copy;
   }, [query, diet, more, rail, shelf, favorites, hidden, allergies, showBlocked, sort, timeMax, protein, pantry, nextGen, tableGoal]);
+
+  // f3: Back with a recipe card open closes the card (web and APK).
+  useBackToClose(active !== null, () => setActive(null));
 
   function openRecipe(recipe: Recipe) {
     setActive(recipe);

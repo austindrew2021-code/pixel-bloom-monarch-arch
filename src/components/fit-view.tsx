@@ -64,7 +64,7 @@ import { cn } from "@/lib/utils";
 import { weekDates } from "@/lib/week";
 import type { WorkoutKind } from "@/lib/types";
 
-export function FitView({ onOpenStore }: { onOpenStore?: () => void }) {
+export function FitView({ onOpenStore, onOpenTrain }: { onOpenStore?: () => void; onOpenTrain?: () => void }) {
   const goal = useSpoonful((s) => s.goal);
   const meals = useSpoonful((s) => s.meals);
   const pantry = useSpoonful((s) => s.pantry);
@@ -188,9 +188,13 @@ export function FitView({ onOpenStore }: { onOpenStore?: () => void }) {
           : ` and your ${goalLabel(body.goalKind)} goal`}
         . Finish, skip, or miss a workout and tonight's dinner updates to match.
       </p>
-      <button type="button" className="hud-btn hud-btn-on mt-3 flex h-12 w-full items-center justify-center gap-2 text-sm font-semibold" onClick={() => setTab("train")}>
+      <button
+        type="button"
+        className="hud-btn hud-btn-on mt-3 flex h-12 w-full items-center justify-center gap-2 text-sm font-semibold"
+        onClick={() => (onOpenTrain ? onOpenTrain() : setTab("train"))}
+      >
         <Dumbbell className="size-4" />
-        Open Training HUD
+        {onOpenTrain ? "Today's workout" : "Open Training HUD"}
       </button>
 
       <section className="mt-5 rounded-3xl bg-spark p-4 text-spark-foreground" data-tour="fuel-now">

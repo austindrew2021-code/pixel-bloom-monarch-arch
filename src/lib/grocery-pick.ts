@@ -122,6 +122,127 @@ export function needEach(qty: number, unit: string): number | null {
 
 type Cover = { packs: number; totalCad: number; leftover: number; leftoverShare?: number; byWeight?: boolean };
 
+/** Dollars on a shelf card. Unit prices, "was" prices, and "save $2" are not the pack you pay. */
+export function lowestShelfPrice(text: string): number | null {
+  const cleaned = text
+    .replace(/,/g, "")
+    .replace(/\$\s*\d+(?:\.\d+)?\s*\/\s*[\d.]*\s*(?:g|kg|ml|l|oz|lb|ea|100\s*g)\b/gi, " ")
+    .replace(/\b(?:was|reg\.?|regular|orig\.?|original)\s*\$\s*\d+(?:\.\d{1,2})?/gi, " ")
+    .replace(/\b(?:save|off|earn)\s*\$\s*\d+(?:\.\d{1,2})?/gi, " ");
+  const nums: number[] = [];
+  for (const m of cleaned.matchAll(/\$\s*(\d+(?:\.\d{1,2})?)/g)) {
+    const n = Number(m[1]);
+    if (n > 0 && n < 500) nums.push(roundMoney(n));
+  }
+  if (!nums.length) return null;
+  const packs = nums.filter((n) => n >= 0.5);
+  const pool = packs.length ? packs : nums;
+  return Math.min(...pool);
+}
+
+export type ShelfPricing = {
+  price?: unknown;
+  wasPrice?: unknown;
+  displayPrice?: unknown;
+  memberOnlyPrice?: unknown;
+  mopDisplayPrice?: unknown;
+};
+
+export type ShelfDeal = { type?: string | null; text?: string | null; name?: string | null } | null;
+
+function asPackMoney(raw: unknown): number | null {
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "number") return raw > 0 && raw < 500 ? roundMoney(raw) : null;
+  if (typeof raw === "string") return lowestShelfPrice(raw.includes("$") ? raw : `$${raw}`);
+  if (typeof raw === "object") {
+    const row = raw as { value?: unknown; unit?: string; type?: string };
+    const unit = `${row.unit ?? ""} ${row.type ?? ""}`.toLowerCase();
+    if (/100\s*g|\bkg\b|\/|\blb\b|\bml\b/.test(unit)) return null;
+    if ("value" in row) return asPackMoney(row.value);
+  }
+  return null;
+}
+
+/**
+ * Strict "N for $X" multi-buy, nothing else in the text: "2 for $5", "5 for $3.99", "3/$10".
+ * Conditions ("$2.00 MIN 2", "$1.00 OFF", "$2 off 2", "SAVE $1"), member or PC Optimum offers,
+ * and anything we can't read for sure are ignored: the cook pays the regular price.
+ */
+const MULTI_BUY = /^\s*(\d{1,2})\s*(?:for|\/)\s*\$\s*(\d+(?:\.\d{1,2})?)\s*$/i;
+const MEMBER_DEAL = /\b(?:member|members|optimum|pco|pc\s*o|points?|mop)\b/i;
+
+/**
+ * Price one pack costs a shopper who is not a known PC Optimum member: the store's current
+ * `price` (which already includes a plain sale; `wasPrice` is the old price). The displayed price
+ * is only a fallback when `price` is missing. Member-only and MOP prices are never used (there is
+ * no membership flag), deal text is never read as a pack price, and a multi-buy is kept only when
+ * it is a plain "N for $X" that is cheaper per unit than the regular price. Pricing only re-ranks
+ * products that are already exact, covering matches; it never decides whether one matches.
+ */
+export function payablePackPrice(
+  pricing?: ShelfPricing | null,
+  deal?: ShelfDeal,
+): { priceCad: number | null; dealCount?: number; dealCad?: number } {
+  const priceCad = asPackMoney(pricing?.price) ?? asPackMoney(pricing?.displayPrice);
+  if (priceCad == null) return { priceCad: null };
+  const text = (deal?.text ?? "").trim();
+  const label = `${deal?.type ?? ""} ${deal?.name ?? ""}`;
+  if (!text || MEMBER_DEAL.test(text) || MEMBER_DEAL.test(label)) return { priceCad };
+  const multi = text.match(MULTI_BUY);
+  if (!multi) return { priceCad };
+  const count = Number(multi[1]);
+  const cad = Number(multi[2]);
+  // Per-unit derived and strictly cheaper than buying singles; otherwise it isn't a deal we trust.
+  if (count < 2 || count > 24 || !(cad > 0) || cad / count >= priceCad - 0.005) return { priceCad };
+  return { priceCad, dealCount: count, dealCad: roundMoney(cad) };
+}
+
+/** "Bag of 5" and "5 pack" count as five of the food, even when the size line says 1 ea. */
+export function packCountFromName(name: string): number | undefined {
+  const text = name.replace(/\s+/g, " ").trim();
+  // A range ("8-10 count", "8 to 10 ct") is read as its low end, so the cart never under-buys.
+  const range = text.match(/\b(\d{1,2})\s*(?:-|–|to)\s*(\d{1,2})\s*(?:pk|packs|pack|ct|count|counts|pieces|pcs)\b/i);
+  const bag = text.match(/\b(?:bag|pack|package|box|tray)\s+of\s+(\d{1,2})\b/i);
+  const lead = text.match(/(?<![\d.\-–])\b(\d{1,2})\s*[- ]?(?:pk|packs|pack|ct|count|counts)\b/i);
+  const raw = range ? String(Math.min(Number(range[1]), Number(range[2]))) : (bag?.[1] ?? lead?.[1]);
+  if (!raw) return undefined;
+  const n = Number(raw);
+  if (n >= 2 && n <= 48) return n;
+  return undefined;
+}
+
+export function shelfProduct(
+  brand: StoreBrand,
+  tile: {
+    brand?: string;
+    title?: string;
+    packageSizing?: string;
+    pricing?: ShelfPricing | null;
+    deal?: ShelfDeal;
+  },
+): MatchProduct | null {
+  const title = `${tile.brand ?? ""} ${tile.title ?? ""}`.replace(/\s+/g, " ").trim();
+  const pay = payablePackPrice(tile.pricing, tile.deal);
+  if (!title || pay.priceCad == null) return null;
+  const sizing = parsePackageSizing(tile.packageSizing || "");
+  const named = packCountFromName(title);
+  const each = named && named > 1 && (!sizing.each || sizing.each <= 1) ? named : sizing.each;
+  return {
+    brand,
+    name: title,
+    sizeLabel: sizing.sizeLabel || (each ? `${each} ct` : "1 ea"),
+    priceCad: pay.priceCad,
+    grams: sizing.grams,
+    ml: sizing.ml,
+    each,
+    unitHint: sizing.unitHint,
+    perKgCad: sizing.perKgCad,
+    unitPrice: sizing.unitPrice,
+    dealCount: pay.dealCount,
+    dealCad: pay.dealCad,
+  };
+}
+
 /**
  * Packs of one product that cover the recipe amount, or null when that can't be
  * confirmed. Per-kg trays use their weight (stated, or price ÷ $/kg), never
@@ -205,6 +326,8 @@ export function parsePackageSizing(raw: string): {
   if (ml) return { sizeLabel, unitHint, ml: Number(ml[1]), unitPrice };
   const each = lower.match(/^([\d.]+)\s*(ea|ct|count|pk|pack)\b/);
   if (each) return { sizeLabel, unitHint, each: Math.max(1, Math.round(Number(each[1]))), unitPrice };
+  const named = packCountFromName(sizeLabel);
+  if (named) return { sizeLabel, unitHint, each: named, unitPrice };
   return { sizeLabel, unitHint, unitPrice };
 }
 
@@ -663,6 +786,46 @@ const PREPARED_GROUPS: { id: string; markers: string[] }[] = [
   { id: "vegpepper", markers: ["bell pepper", "bell", "jalapeno", "habanero", "banana pepper", "sweet pepper"] },
 ];
 
+/** Unicode vulgar fractions a cook types or pastes ("¾ lb"). */
+const NEED_FRACTIONS: Record<string, number> = { "⅛": 0.125, "¼": 0.25, "⅓": 1 / 3, "½": 0.5, "⅔": 2 / 3, "¾": 0.75, "⅞": 0.875 };
+const NEED_QTY = String.raw`(\d+(?:\.\d+)?\s+\d+\/\d+|\d+\s*[⅛¼⅓½⅔¾⅞]|[⅛¼⅓½⅔¾⅞]|\d+\/\d+|\d+(?:\.\d+)?)`;
+const NEED_UNIT = String.raw`(lbs?|pounds?|oz|ounces?|kg|kilograms?|g|grams?|ml|millilit(?:er|re)s?|l|lit(?:er|re)s?|cups?|tbsp|tablespoons?|tsp|teaspoons?|cans?|jars?|bottles?|pkgs?|packs?|packages?|bags?|boxes|box|ea|each|ct|count)`;
+const NEED_TRAILING = new RegExp(String.raw`[\s,\-–—]*${NEED_QTY}\s*${NEED_UNIT}\.?\s*$`, "i");
+const NEED_LEADING = new RegExp(String.raw`^\s*${NEED_QTY}\s*${NEED_UNIT}\.?(?:\s+of)?\s+`, "i");
+const NEED_UNIT_CANON: Record<string, string> = {
+  pound: "lb", pounds: "lb", lbs: "lb", ounce: "oz", ounces: "oz", kilogram: "kg", kilograms: "kg", gram: "g", grams: "g",
+  tablespoon: "tbsp", tablespoons: "tbsp", teaspoon: "tsp", teaspoons: "tsp", package: "pkg", packages: "pkg", pkgs: "pkg",
+};
+
+function needQtyValue(raw: string): number {
+  const t = raw.trim();
+  const mixedSlash = t.match(/^(\d+(?:\.\d+)?)\s+(\d+)\/(\d+)$/);
+  if (mixedSlash) return Number(mixedSlash[1]) + Number(mixedSlash[2]) / Number(mixedSlash[3]);
+  const mixedGlyph = t.match(/^(\d+)\s*([⅛¼⅓½⅔¾⅞])$/);
+  if (mixedGlyph) return Number(mixedGlyph[1]) + NEED_FRACTIONS[mixedGlyph[2]!]!;
+  if (NEED_FRACTIONS[t] !== undefined) return NEED_FRACTIONS[t]!;
+  const slash = t.match(/^(\d+)\/(\d+)$/);
+  if (slash) return Number(slash[2]) ? Number(slash[1]) / Number(slash[2]) : 0;
+  return Number(t);
+}
+
+/**
+ * A typed or pasted line ("salmon fillets ¾ lb", "¾ lb salmon fillets") keeps its amount in the
+ * name. Move that amount into qty/unit so it doesn't become search words. Only when the line has no
+ * unit of its own (free text); structured recipe lines are returned unchanged. Never yields qty 0.
+ */
+export function normalizeNeedLine<T extends CartNeed>(line: T): T {
+  if ((line.unit ?? "").trim() || (Number(line.qty) || 1) !== 1) return line;
+  const name = line.name ?? "";
+  const m = name.match(NEED_TRAILING) ?? name.match(NEED_LEADING);
+  if (!m) return line;
+  const qty = needQtyValue(m[1]!);
+  const rest = name.replace(m[0], " ").replace(/\s+/g, " ").replace(/[\s,\-–—]+$/, "").trim();
+  if (!(qty > 0) || !Number.isFinite(qty) || !/[a-z]/i.test(rest)) return line;
+  const u = m[2]!.toLowerCase();
+  return { ...line, name: rest, qty, unit: NEED_UNIT_CANON[u] ?? u };
+}
+
 export function searchTermFor(name: string): string {
   return name
     .toLowerCase()
@@ -672,6 +835,17 @@ export function searchTermFor(name: string): string {
     .map((word) => (word.length > 4 && word.endsWith("s") && !word.endsWith("ss") ? word.slice(0, -1) : word))
     .join(" ")
     .slice(0, 80);
+}
+
+/**
+ * r2: a typed shop line ("salmon fillets ¾ lb") → name + amount for the list, so the row shows
+ * "0.75 lb"-style amounts like every other line. No amount found → just the name. Never qty 0.
+ */
+export function splitTypedAmount(text: string): { name: string; amount?: { qty: number; unit: string } } {
+  const name = text.trim();
+  const n = normalizeNeedLine({ name, qty: 1, unit: "", aisle: "Other" });
+  if (!n.unit || n.name === name || !(n.qty > 0)) return { name };
+  return { name: n.name, amount: { qty: n.qty, unit: n.unit } };
 }
 
 /** Overlay fill searches the ingredient, never a Superstore catalog SKU name. */
@@ -863,9 +1037,11 @@ export function matchCart(
 /** Catalog pick: the same exact-match rules as the live store search. */
 export function pickForLine(
   store: { brand: StoreBrand; name: string },
-  line: CartNeed,
+  rawLine: CartNeed,
   profile?: ShieldProfile,
 ): GroceryPick {
+  // r2: show the amount that was parsed out of the name ("salmon fillets", 0.75 lb), not the raw text.
+  const line = normalizeNeedLine(rawLine);
   const result = catalogPick(store, line, profile);
   const top = result.pick;
   if (!top) {
@@ -936,7 +1112,8 @@ export function catalogChoices(
   return result.choices.map((c, index) => choiceOption(store, line, c, index, false));
 }
 
-export function catalogPick(store: { brand: StoreBrand; name: string }, line: CartNeed, profile?: ShieldProfile) {
+export function catalogPick(store: { brand: StoreBrand; name: string }, rawLine: CartNeed, profile?: ShieldProfile) {
+  const line = normalizeNeedLine(rawLine);
   const staple = matchStaple(line.name);
   const products = (staple?.products.filter((p) => p.brand === store.brand) ?? []) as MatchProduct[];
   return pickExact({ line, products, profile, gramsPerCup: staple?.gramsPerCup });

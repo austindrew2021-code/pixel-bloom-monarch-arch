@@ -3,15 +3,17 @@ import {
   catalogPick,
   choiceOption,
   matchStaple,
+  normalizeNeedLine,
   optionFromRank,
-  parsePackageSizing,
   searchTermFor,
+  shelfProduct,
   type CartNeed,
   type StoreOption,
 } from "./grocery-pick.ts";
 import { compare, coverNeed, normalizeUpc, pickExact, shieldBlocks, type MatchProduct, type PickResult, type ShieldProfile } from "./grocery-match.ts";
 import { pcxIdentityFor, type PcxIdentity } from "./grocery-owner.server.ts";
 import { kmBetween, productPageUrl, isPcxCartId, type StoreBrand } from "./grocery-stores.ts";
+import { looksLikeBotWall } from "./store-page-pick.ts";
 
 const PCX = "https://api.pcexpress.ca";
 const FALLBACK_RASS = "0357";
@@ -36,8 +38,16 @@ type Tile = {
   title?: string;
   packageSizing?: string;
   productImage?: { smallUrl?: string; thumbnailUrl?: string; imageUrl?: string }[];
-  pricing?: { price?: string };
+  pricing?: {
+    price?: unknown;
+    wasPrice?: unknown;
+    displayPrice?: unknown;
+    memberOnlyPrice?: unknown;
+    mopDisplayPrice?: unknown;
+  };
   pricingUnits?: { type?: string; weighted?: boolean } | null;
+  deal?: { type?: string | null; text?: string | null; name?: string | null } | null;
+  badges?: { dealBadge?: { type?: string | null; text?: string | null; name?: string | null } | null };
   inventoryIndicator?: string | null;
   link?: string;
   articleNumber?: string;
@@ -65,6 +75,18 @@ const locatorCache = new Map<string, { at: number; storeId: string }>();
 const detailCache = new Map<string, { at: number; detail: DetailJson | null }>();
 const CACHE_MS = 10 * 60 * 1000;
 
+/**
+ * Store-check backoff (from the Grok workspace), scoped to ONE shopper (r3): when the store answers
+ * that shopper's search with a person check or "busy", don't send that same shopper's next search
+ * for 2 minutes. Keyed by the owner's derived PC Express user id, so one cook's wall never shows
+ * the notice to anyone else. Only the check state is kept; prices and stock are read fresh.
+ * In-memory, per server instance (no shared storage), capped so it can't grow without bound.
+ */
+export type StoreCheck = "person" | "busy";
+const checkCache = new Map<string, { at: number; check: StoreCheck }>();
+const CHECK_MS = 2 * 60 * 1000;
+const CHECK_CACHE_MAX = 500;
+
 export type LiveInput = {
   store: { brand: StoreBrand; name: string };
   line: CartNeed;
@@ -85,6 +107,10 @@ export type LiveResult = {
   reason: string;
   live: boolean;
   pinnedUpc?: string;
+  /** The store answered this shopper with a check: Fill stops. See `check` for which one. */
+  blocked?: boolean;
+  /** "person" (401/403 or a bot-wall page: finish it on the store page) or "busy" (429: try again in a minute). */
+  check?: StoreCheck;
 };
 
 /** Exact-match options only (empty when the cook has to choose). */
@@ -92,7 +118,9 @@ export async function liveStoreOptions(input: LiveInput): Promise<StoreOption[]>
   return (await liveStoreResult(input)).options;
 }
 
-export async function liveStoreResult(input: LiveInput): Promise<LiveResult> {
+export async function liveStoreResult(rawInput: LiveInput): Promise<LiveResult> {
+  // "salmon fillets ¾ lb" typed as a name: the amount is qty/unit, not search words.
+  const input: LiveInput = { ...rawInput, line: normalizeNeedLine(rawInput.line) };
   const banner = pcxBannerFor(input.store);
   if (!banner || !pcxKey()) return catalogResult(input, "unavailable");
   const storeId =
@@ -101,9 +129,11 @@ export async function liveStoreResult(input: LiveInput): Promise<LiveResult> {
     (banner === "rass" ? FALLBACK_RASS : "");
   if (!storeId) return catalogResult(input, "unavailable");
   const identity = pcxIdentityFor(input.shopper);
-  const tiles = await searchTiles(banner, storeId, input.line.name, identity);
-  if (tiles.length === 0) return catalogResult(input, "unavailable");
-  const products = tiles
+  const found = await searchTiles(banner, storeId, input.line.name, identity);
+  if (found.tiles.length === 0) {
+    return { ...catalogResult(input, "unavailable"), ...(found.check ? { blocked: true, check: found.check } : {}) };
+  }
+  const products = found.tiles
     .map((tile) => tileToProduct(input.store, tile))
     .filter((p): p is MatchProduct => Boolean(p));
   const staple = matchStaple(input.line.name);
@@ -213,14 +243,34 @@ async function nearestStoreId(banner: Banner, lat?: number, lon?: number): Promi
   }
 }
 
-async function searchTiles(banner: Banner, storeId: string, query: string, identity: PcxIdentity): Promise<Tile[]> {
+async function searchTiles(
+  banner: Banner,
+  storeId: string,
+  query: string,
+  identity: PcxIdentity,
+): Promise<{ tiles: Tile[]; check?: StoreCheck }> {
   const term = searchTermFor(query);
+  // Per shopper, never global: the derived user id is stable per owner and random when there is none.
+  const wallKey = `${banner}:${storeId}:${identity.domainUserId}`;
+  const wall = checkCache.get(wallKey);
+  if (wall && Date.now() - wall.at < CHECK_MS) return { tiles: [], check: wall.check };
+  const remember = (check: StoreCheck) => {
+    if (checkCache.size >= CHECK_CACHE_MAX) checkCache.clear();
+    checkCache.set(wallKey, { at: Date.now(), check });
+  };
   const first = await searchPage(banner, storeId, term, 1, identity);
+  if (first.check) {
+    remember(first.check);
+    return { tiles: [], check: first.check };
+  }
   const pageSize = first.pageSize || 48;
   const pages = Math.min(MAX_PAGES, Math.max(1, Math.ceil((first.total || 0) / pageSize)));
   const rest = pages > 1
     ? await Promise.all(Array.from({ length: pages - 1 }, (_, i) => searchPage(banner, storeId, term, i + 2, identity)))
     : [];
+  const check = rest.find((p) => p.check)?.check;
+  if (check) remember(check);
+  else checkCache.delete(wallKey);
   const seen = new Set<string>();
   const tiles: Tile[] = [];
   for (const tile of [first, ...rest].flatMap((p) => p.tiles)) {
@@ -229,7 +279,7 @@ async function searchTiles(banner: Banner, storeId: string, query: string, ident
     seen.add(id);
     tiles.push(tile);
   }
-  return tiles;
+  return { tiles, check };
 }
 
 async function searchPage(
@@ -238,8 +288,8 @@ async function searchPage(
   term: string,
   page: number,
   identity: PcxIdentity,
-): Promise<{ tiles: Tile[]; total: number; pageSize: number }> {
-  const empty = { tiles: [], total: 0, pageSize: 48 };
+): Promise<{ tiles: Tile[]; total: number; pageSize: number; check?: StoreCheck }> {
+  const empty: { tiles: Tile[]; total: number; pageSize: number; check?: StoreCheck } = { tiles: [], total: 0, pageSize: 48 };
   const headers = pcxHeaders(banner);
   if (!headers) return empty;
   const body = {
@@ -270,8 +320,12 @@ async function searchPage(
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(10000),
     });
+    const text = await res.text();
+    // 429 is the store being busy (rate limit), not a person check; worded differently in the app.
+    if (res.status === 429) return { ...empty, check: "busy" };
+    if (res.status === 401 || res.status === 403 || looksLikeBotWall(text)) return { ...empty, check: "person" };
     if (!res.ok) return empty;
-    const json = (await res.json()) as SearchJson;
+    const json = JSON.parse(text) as SearchJson;
     // Page 1 splits its tiles across several grid components (around a video); read them all.
     const grids = (json.layout?.sections?.mainContentCollection?.components ?? []).filter((c) => Array.isArray(c.data?.productTiles));
     const tiles = grids.flatMap((c) => c.data!.productTiles!);
@@ -314,10 +368,15 @@ function applyDetail(p: MatchProduct, d: DetailJson) {
 }
 
 function tileToProduct(store: { brand: StoreBrand; name: string }, tile: Tile): MatchProduct | null {
-  const title = `${tile.brand ?? ""} ${tile.title ?? ""}`.replace(/\s+/g, " ").trim();
-  const priceCad = Number(tile.pricing?.price);
-  if (!title || !Number.isFinite(priceCad) || priceCad <= 0) return null;
-  const sizing = parsePackageSizing(tile.packageSizing || "");
+  // Pack price the cook pays (current / member / multi-buy deal; never the was-price or $/100 g).
+  const base = shelfProduct(store.brand, {
+    brand: tile.brand ?? undefined,
+    title: tile.title,
+    packageSizing: tile.packageSizing,
+    pricing: tile.pricing,
+    deal: tile.deal ?? tile.badges?.dealBadge ?? null,
+  });
+  if (!base) return null;
   const img = tile.productImage?.[0];
   const imageUrl = img?.smallUrl || img?.thumbnailUrl || img?.imageUrl || "";
   const id = tile.productId || tile.articleNumber;
@@ -325,21 +384,12 @@ function tileToProduct(store: { brand: StoreBrand; name: string }, tile: Tile): 
   const stock = (tile.inventoryIndicator || "").toString().toUpperCase();
   const type = tile.pricingUnits?.type ?? "";
   return {
-    brand: store.brand,
-    name: title,
-    sizeLabel: sizing.sizeLabel || "1 ea",
-    priceCad,
-    grams: sizing.grams,
-    ml: sizing.ml,
-    each: sizing.each,
-    perKgCad: sizing.perKgCad,
+    ...base,
     // SOLD_BY_WEIGHT = weighed to order; SOLD_BY_EACH_PRICED_BY_WEIGHT = a tray, price is an estimate.
     soldByWeight: type === "SOLD_BY_WEIGHT" || tile.pricingUnits?.weighted === true,
-    unitPrice: sizing.unitPrice,
     url: productPageUrl(store, id) || productPageUrl(store, path),
     imageUrl,
     productId: id,
-    unitHint: sizing.unitHint,
     inStock: !stock || (!stock.includes("OUT") && stock !== "OOS"),
   };
 }

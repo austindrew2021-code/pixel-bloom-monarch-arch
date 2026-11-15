@@ -1,4 +1,5 @@
 import { Beef, Check, ChevronLeft, ChevronRight, Clock, Heart, Refrigerator, ShoppingBasket, Sparkles, UtensilsCrossed, WandSparkles } from "lucide-react";
+import { cooksLabel } from "@/lib/cook-label";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ChefPlateLine } from "@/components/chef-plate-line";
@@ -10,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { isUnlocked } from "@/lib/access";
 import { cuisineBar } from "@/lib/cuisine";
-import { dayFuel, isoDate } from "@/lib/fuel";
+import { applyHealthToFuel, dayFuel, isoDate } from "@/lib/fuel";
 import { dotJoin, resolvedTimeLabel } from "@/lib/recipe-time";
 import { t } from "@/lib/i18n";
 import { whenLabel } from "@/lib/kitchen-log";
@@ -98,6 +99,7 @@ export function PlanView({ onOpenStore }: { onOpenStore: () => void }) {
   const nutritionOn = isUnlocked(unlocked, "nutrition") || nextGen;
   const rank = rankForXp(xp);
   const today = isoDate();
+  const healthToday = useSpoonful((s) => s.healthByDate[today]);
   const todayDate = dates.find((d) => dayLabel(d).today);
   const tonight = todayDate
     ? weekMeals.find((m) => m.date === todayDate && m.slot === "dinner")
@@ -132,7 +134,7 @@ export function PlanView({ onOpenStore }: { onOpenStore: () => void }) {
     logged: workouts.filter((w) => w.date === today),
     bodyKg: body.weightKg,
   });
-  const fuel =
+  const rawFuel =
     nextGen || portionSync
       ? dayFuel({
           goal,
@@ -142,22 +144,26 @@ export function PlanView({ onOpenStore }: { onOpenStore: () => void }) {
           body,
         })
       : null;
+  const fuel = rawFuel && healthToday ? applyHealthToFuel(rawFuel, healthToday) : rawFuel;
   // Same-day fuel, but with tonight's own dinner left out — the room dinner
   // alone is meant to fill, so scaling it against that (rather than against
   // what's left after eating it) is the correct basis for the multiplier.
-  const tonightSync =
+  const tonightRoom =
     portionSync && todayDate && tonight && !tonight.skip && resolveMeal(tonight).recipe
-      ? portionSyncFor(
-          resolveMeal(tonight).recipe!,
-          dayFuel({
-            goal,
-            eaten: nutritionForDateExcluding(meals, today, snacks, tonight.id, cookedDates),
-            workouts: todayWorkouts,
-            steps: stepsByDate[today] ?? 0,
-            body,
-          }).remaining.cal,
-        )
+      ? dayFuel({
+          goal,
+          eaten: nutritionForDateExcluding(meals, today, snacks, tonight.id, cookedDates),
+          workouts: todayWorkouts,
+          steps: stepsByDate[today] ?? 0,
+          body,
+        })
       : null;
+  const tonightSync = tonightRoom
+    ? portionSyncFor(
+        resolveMeal(tonight!).recipe!,
+        (healthToday ? applyHealthToFuel(tonightRoom, healthToday) : tonightRoom).remaining.cal,
+      )
+    : null;
 
   function pickForMe(date: string) {
     const recipe = surpriseDinner(date);
@@ -454,10 +460,10 @@ export function PlanView({ onOpenStore }: { onOpenStore: () => void }) {
                   )}
                   onClick={() => {
                     assignCook(todayDate, name);
-                    toast(`${name} cooks tonight`);
+                    toast(`${cooksLabel(name)} tonight`);
                   }}
                 >
-                  {name} cooks
+                  {cooksLabel(name)}
                 </button>
               ))}
             </div>

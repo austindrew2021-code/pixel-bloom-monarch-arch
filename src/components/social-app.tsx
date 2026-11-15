@@ -1,5 +1,6 @@
 import {
   Bookmark,
+  ChevronLeft,
   Clapperboard,
   Globe,
   Heart,
@@ -15,6 +16,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
+import { useBackToClose } from "@/lib/back-close";
 import { ChatPane } from "@/components/chat-pane";
 import { FamilyTable } from "@/components/people-view";
 import { Button } from "@/components/ui/button";
@@ -37,20 +39,19 @@ import {
 } from "@/lib/social-house";
 import { loadPass, savePass, uid, type PassState } from "@/lib/social-local";
 import { commentSocial, loadSocialCloud, publishSocial, setSocialPrivate, toggleSocial } from "@/lib/social";
-import { useSpoonful } from "@/lib/spoonful-store";
-import { normalizeTheme, themeById } from "@/lib/themes";
 import { cn } from "@/lib/utils";
 
 type Pane = "home" | "reels" | "chat" | "table" | "you";
 
-function authorOf(id: string, me: string, myName: string) {
-  if (id === "me") return { id, username: myName, name: myName };
-  return houseAuthor(id) ?? { id, username: myName, name: myName };
+function authorOf(id: string, _me: string, myName: string) {
+  if (id === "me") return { id, username: myName, name: myName, avatar: undefined as string | undefined };
+  const house = houseAuthor(id);
+  return house ?? { id, username: myName, name: myName, avatar: undefined as string | undefined };
 }
 
 export function SocialApp({ onClose }: { onClose: () => void }) {
-  const theme = useSpoonful((s) => s.theme);
-  const look = themeById(normalizeTheme(theme));
+  // r3: Android / browser Back closes the Social overlay (f3 back-close), not the app.
+  useBackToClose(true, onClose);
   const { user } = useCurrentUserState();
   const [pane, setPane] = useState<Pane>("home");
   const [pass, setPass] = useState<PassState>(() => loadPass());
@@ -76,13 +77,19 @@ export function SocialApp({ onClose }: { onClose: () => void }) {
   }, [pass]);
 
   useEffect(() => {
-    void getMyProfile()
-      .then((p) => {
-        if (p?.username) setMyName(p.username);
-      })
-      .catch(() => {});
-    void loadSocialCloud().then((cloud) => {
-      if (!cloud) return;
+    let dead = false;
+    void (async () => {
+      let name = "you";
+      try {
+        const profile = await getMyProfile();
+        if (profile?.username) name = profile.username;
+      } catch {
+        /* signed out */
+      }
+      if (dead) return;
+      setMyName(name);
+      const cloud = await loadSocialCloud();
+      if (dead || !cloud) return;
       setCloudLikes(cloud.likes);
       const counts: Record<string, number> = {};
       for (const row of cloud.counts) counts[row.postId] = row.likes;
@@ -93,11 +100,14 @@ export function SocialApp({ onClose }: { onClose: () => void }) {
         saves: Array.from(new Set([...prev.saves, ...cloud.saves])),
         reposts: Array.from(new Set([...prev.reposts, ...cloud.reposts])),
         privateProfile: cloud.privateProfile,
-        posts: mergePosts(prev.posts, cloud.posts, myName),
+        posts: mergePosts(prev.posts, cloud.posts, name),
         comments: mergeComments(prev.comments, cloud.comments),
       }));
-    });
-  }, [myName]);
+    })();
+    return () => {
+      dead = true;
+    };
+  }, []);
 
   const stories = useMemo(
     () => [...pass.posts.filter((p) => p.kind === "story"), ...houseStories()],
@@ -229,30 +239,76 @@ export function SocialApp({ onClose }: { onClose: () => void }) {
     toast("Sent in messages");
   }
 
+  function openPane(next: Pane) {
+    setPane(next);
+    setProfileId(null);
+    setLocalChat(null);
+    setCompose(false);
+    setStoryAt(null);
+    setCommentsFor(null);
+    setShareFor(null);
+  }
+
   const activeStory = storyAt !== null ? stories[storyAt] : undefined;
+  const title = profileId
+    ? `@${authorOf(profileId, "me", myName).username}`
+    : localChat
+      ? authorOf(localChat, "me", myName).name
+      : compose
+        ? "New"
+        : pane === "reels"
+          ? "Reels"
+          : pane === "chat"
+            ? "Chat"
+            : pane === "table"
+              ? "Table"
+              : pane === "you"
+                ? "You"
+                : "People";
 
   return (
-    <div className="fixed inset-0 z-[70] flex bg-foreground/45 p-1.5 sm:p-4" role="dialog" aria-label="People">
-      <div
-        data-testid="social-app"
-        className="social-stage mx-auto flex h-full w-full max-w-lg flex-col overflow-hidden rounded-[1.7rem] border-8 shadow-2xl"
-        style={{ borderColor: look.swatch[2] }}
-      >
-        <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border px-2">
-          <button type="button" onClick={onClose} className="flex h-11 items-center gap-1 rounded-full px-2 text-sm font-semibold">
-            <X className="size-4" />
-            Back
-          </button>
-          <p className="font-display text-xl" data-tour="people-head">
-            People
-          </p>
-          <button type="button" className="grid size-11 place-items-center rounded-full" aria-label="New post" onClick={() => setCompose(true)}>
-            <Plus className="size-5" />
-          </button>
+    <div
+      data-testid="social-app"
+      className="social-stage fixed inset-0 z-[80] flex h-dvh flex-col"
+      role="dialog"
+      aria-modal="true"
+      aria-label="People"
+    >
+      {activeStory ? null : (
+        <header className="shrink-0 border-b border-border pt-[max(0.25rem,env(safe-area-inset-top))]">
+          <div className="relative flex items-center justify-between px-1">
+            <button type="button" onClick={onClose} className="flex h-12 items-center gap-0.5 px-1 text-[15px] font-semibold">
+              <ChevronLeft className="size-6" />
+              Spoonful
+            </button>
+            <p className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-[17px] font-semibold" data-tour="people-head">
+              {title}
+            </p>
+            <div className="flex h-12 items-center justify-end">
+              {compose ? (
+                <button type="button" className="h-12 px-3 text-sm font-semibold text-primary" onClick={() => void publish()}>
+                  Post
+                </button>
+              ) : profileId ? (
+                <button type="button" className="h-12 px-3 text-sm font-semibold" onClick={() => setProfileId(null)}>
+                  Feed
+                </button>
+              ) : localChat ? (
+                <button type="button" className="h-12 px-3 text-sm font-semibold" onClick={() => setLocalChat(null)}>
+                  Inbox
+                </button>
+              ) : (
+                <button type="button" className="grid size-12 place-items-center" aria-label="New post" onClick={() => setCompose(true)}>
+                  <Plus className="size-6" />
+                </button>
+              )}
+            </div>
+          </div>
         </header>
+      )}
 
         <div className="relative min-h-0 flex-1">
-          {pane === "home" ? (
+          {!profileId && !compose && pane === "home" ? (
             <div className="h-full overflow-y-auto">
               <StoryRow
                 stories={stories}
@@ -292,12 +348,12 @@ export function SocialApp({ onClose }: { onClose: () => void }) {
             </div>
           ) : null}
 
-          {pane === "reels" ? (
+          {!profileId && !compose && pane === "reels" ? (
             <div className="h-full snap-y snap-mandatory overflow-y-auto">
               {reels.map((post) => (
                 <article key={post.id} className="relative h-full snap-start snap-always">
                   {post.media ? (
-                    <img src={post.media} alt="" className="social-reel-still absolute inset-0 h-full w-full object-cover" />
+                    <img src={post.media} alt="" decoding="async" className="absolute inset-0 h-full w-full object-cover" />
                   ) : (
                     <div className="absolute inset-0 bg-card" />
                   )}
@@ -326,7 +382,7 @@ export function SocialApp({ onClose }: { onClose: () => void }) {
             </div>
           ) : null}
 
-          {pane === "chat" ? (
+          {!profileId && !compose && pane === "chat" ? (
             <div className="relative h-full overflow-hidden">
               {localChat ? (
                 <LocalThread
@@ -368,13 +424,13 @@ export function SocialApp({ onClose }: { onClose: () => void }) {
             </div>
           ) : null}
 
-          {pane === "table" ? (
+          {!profileId && !compose && pane === "table" ? (
             <div className="h-full overflow-y-auto">
               <FamilyTable />
             </div>
           ) : null}
 
-          {pane === "you" ? (
+          {!profileId && !compose && pane === "you" ? (
             <Profile
               name={myName}
               isMe
@@ -401,6 +457,7 @@ export function SocialApp({ onClose }: { onClose: () => void }) {
               total={stories.length}
               myName={myName}
               onClose={() => setStoryAt(null)}
+              onExit={onClose}
               onPrev={() => setStoryAt((n) => (n && n > 0 ? n - 1 : 0))}
               onNext={() =>
                 setStoryAt((n) => {
@@ -426,7 +483,7 @@ export function SocialApp({ onClose }: { onClose: () => void }) {
           ) : null}
 
           {shareFor ? (
-            <div className="absolute inset-0 z-20 flex flex-col justify-end bg-foreground/40">
+            <div className="absolute inset-0 z-40 flex flex-col justify-end bg-black/40">
               <div className="rounded-t-3xl bg-card p-4">
                 <p className="font-display text-xl">Send</p>
                 <div className="mt-3 flex gap-3 overflow-x-auto">
@@ -526,9 +583,6 @@ export function SocialApp({ onClose }: { onClose: () => void }) {
 
           {profileId ? (
             <div className="absolute inset-0 z-20 overflow-y-auto bg-background">
-              <button type="button" className="flex h-12 items-center gap-1 px-3 text-sm font-semibold" onClick={() => setProfileId(null)}>
-                <X className="size-4" /> Back
-              </button>
               <Profile
                 name={authorOf(profileId, "me", myName).username}
                 isMe={profileId === "me"}
@@ -565,20 +619,21 @@ export function SocialApp({ onClose }: { onClose: () => void }) {
                   setPass((p) => ({ ...p, privateProfile: next }));
                   void setSocialPrivate({ data: { isPrivate: next } }).catch(() => {});
                 }}
-                onOpen={() => {}}
+                onOpen={(id) => setCommentsFor(id)}
               />
             </div>
           ) : null}
         </div>
 
-        <nav className="grid h-14 shrink-0 grid-cols-5 border-t border-border bg-card" aria-label="People">
-          <Tab icon={Home} label="Home" on={pane === "home"} onClick={() => setPane("home")} />
-          <Tab icon={Clapperboard} label="Reels" on={pane === "reels"} onClick={() => setPane("reels")} />
-          <Tab icon={MessageCircle} label="Chat" on={pane === "chat"} onClick={() => setPane("chat")} />
-          <Tab icon={Users} label="Table" on={pane === "table"} onClick={() => setPane("table")} />
-          <Tab icon={UserRound} label="You" on={pane === "you"} onClick={() => setPane("you")} />
-        </nav>
-      </div>
+        {activeStory ? null : (
+          <nav className="grid shrink-0 grid-cols-5 border-t border-border bg-background pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1" aria-label="People">
+            <Tab icon={Home} label="Home" on={pane === "home" && !profileId && !compose} onClick={() => openPane("home")} />
+            <Tab icon={Clapperboard} label="Reels" on={pane === "reels" && !profileId && !compose} onClick={() => openPane("reels")} />
+            <Tab icon={MessageCircle} label="Chat" on={pane === "chat" && !localChat && !compose} onClick={() => openPane("chat")} />
+            <Tab icon={Users} label="Table" on={pane === "table" && !profileId && !compose} onClick={() => openPane("table")} />
+            <Tab icon={UserRound} label="You" on={pane === "you" && !profileId && !compose} onClick={() => openPane("you")} />
+          </nav>
+        )}
     </div>
   );
 }
@@ -714,9 +769,9 @@ function FeedCard({
     <li className="border-b border-border">
       <div className="flex items-center gap-2 px-3 py-2">
         <button type="button" onClick={onProfile} className="flex min-w-0 items-center gap-2 text-left">
-          <Avatar name={who.username} />
+          <Avatar name={who.username} src={who.avatar} />
           <span>
-            <span className="block text-sm font-semibold">@{who.username}</span>
+            <span className="block text-sm font-semibold">{who.username}</span>
             <span className="block text-xs text-muted-foreground">{relTime(post.at)}</span>
           </span>
         </button>
@@ -815,6 +870,7 @@ function StoryViewer({
   total,
   myName,
   onClose,
+  onExit,
   onPrev,
   onNext,
 }: {
@@ -823,6 +879,7 @@ function StoryViewer({
   total: number;
   myName: string;
   onClose: () => void;
+  onExit: () => void;
   onPrev: () => void;
   onNext: () => void;
 }) {
@@ -834,19 +891,24 @@ function StoryViewer({
   }, [story.id]);
   const who = authorOf(story.authorId, "me", myName);
   return (
-    <div className="absolute inset-0 z-30 bg-black">
+    <div className="fixed inset-0 z-[90] bg-black">
       {story.media ? <img src={story.media} alt="" className="absolute inset-0 h-full w-full object-cover" /> : null}
-      <div className="absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/70 to-transparent" />
-      <div className="social-on-media absolute inset-x-0 top-0 flex gap-1 p-2">
-        {Array.from({ length: total }).map((_, i) => (
-          <span key={i} className={cn("h-0.5 flex-1 rounded-full", i <= index ? "bg-white" : "bg-white/40")} />
-        ))}
-      </div>
-      <div className="social-on-media absolute inset-x-0 top-4 flex items-center justify-between px-3 pt-3">
-        <p className="text-sm font-semibold">@{who.username}</p>
-        <button type="button" aria-label="Close story" onClick={onClose} className="grid size-11 place-items-center">
-          <X />
-        </button>
+      <div className="absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-black/75 to-transparent pt-[max(0.4rem,env(safe-area-inset-top))]">
+        <div className="flex gap-1 px-2 pt-2">
+          {Array.from({ length: total }).map((_, i) => (
+            <span key={i} className={cn("h-0.5 flex-1 rounded-full", i <= index ? "bg-white" : "bg-white/40")} />
+          ))}
+        </div>
+        <div className="social-on-media flex items-center justify-between px-1">
+          <button type="button" onClick={onExit} className="flex h-11 items-center gap-0.5 text-sm font-semibold">
+            <ChevronLeft className="size-6" />
+            Spoonful
+          </button>
+          <p className="text-sm font-semibold">@{who.username}</p>
+          <button type="button" aria-label="Close story" onClick={onClose} className="grid size-11 place-items-center">
+            <X />
+          </button>
+        </div>
       </div>
       <p className="social-on-media absolute inset-x-4 bottom-8 text-sm font-medium">{story.body}</p>
       <button type="button" aria-label="Previous story" className="absolute inset-y-0 left-0 w-1/3" onClick={onPrev} />
@@ -871,7 +933,7 @@ function CommentSheet({
   onClose: () => void;
 }) {
   return (
-    <div className="absolute inset-0 z-20 flex flex-col justify-end bg-foreground/40">
+    <div className="absolute inset-0 z-40 flex flex-col justify-end bg-black/40">
       <div className="flex max-h-[75%] flex-col rounded-t-3xl bg-card">
         <div className="flex items-center justify-between px-4 pt-3">
           <p className="font-display text-xl">Comments</p>
@@ -924,19 +986,9 @@ function LocalThread({
   onSend: () => void;
   onBack: () => void;
 }) {
-  const who = authorOf(authorId, "me", myName);
+  void onBack;
   return (
     <div className="absolute inset-0 z-10 flex flex-col bg-background">
-      <div className="flex h-14 items-center gap-2 border-b border-border px-2">
-        <button type="button" className="h-11 px-2 text-sm font-semibold" onClick={onBack}>
-          Back
-        </button>
-        <Avatar name={who.username} />
-        <div>
-          <p className="text-sm font-semibold">{who.name}</p>
-          <p className="text-xs text-muted-foreground">On this phone</p>
-        </div>
-      </div>
       <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-3">
         {messages.map((m) => (
           <li key={m.id} className={cn("max-w-[80%] rounded-3xl px-3 py-2 text-sm", m.mine ? "ml-auto rounded-br-md bg-spark text-spark-foreground" : "rounded-bl-md bg-card")}>
@@ -995,7 +1047,7 @@ function Profile({
           <p className="truncate font-display text-2xl">@{name}</p>
           <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
             {isPrivate ? <Lock className="size-3" /> : <Globe className="size-3" />}
-            {isPrivate ? "Private kitchen" : "Public kitchen"}
+            {isPrivate ? "Private" : "Public"}
           </p>
         </div>
       </div>

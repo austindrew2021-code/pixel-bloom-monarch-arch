@@ -43,7 +43,15 @@ function HudClock() {
   );
 }
 
-export function TrainView({ onOpenStore }: { onOpenStore?: () => void }) {
+export function TrainView({
+  onOpenStore,
+  embedded,
+  onOpenFuel,
+}: {
+  onOpenStore?: () => void;
+  embedded?: boolean;
+  onOpenFuel?: () => void;
+}) {
   const body = useSpoonful((s) => s.body);
   const programWeek = useSpoonful((s) => s.programWeek);
   const ensureProgram = useSpoonful((s) => s.ensureProgram);
@@ -109,17 +117,17 @@ export function TrainView({ onOpenStore }: { onOpenStore?: () => void }) {
   const future = theme === "aether";
 
   return (
-    <div className={cn("train-hud mx-auto max-w-2xl overflow-x-clip px-4 pb-10 pt-2", advanced && "train-hud--advanced", future && "train-hud--future")} data-tour="train-hud">
+    <div className={cn("train-hud mx-auto max-w-2xl overflow-x-clip px-4 pb-10 pt-2", advanced && "train-hud--advanced", future && "train-hud--future")} data-tour={embedded ? undefined : "train-hud"}>
       <header className="hud-panel p-4">
         <div className="flex items-center justify-between gap-2">
-          <p className="hud-kicker">
-            {future ? (advanced ? "Command deck · live" : "Crew deck · live") : advanced ? "Training HUD · Advanced" : "Training HUD"}
-          </p>
+          <p className="hud-kicker">{embedded ? "This week" : future ? (advanced ? "Command deck · live" : "Crew deck · live") : advanced ? "Training HUD · Advanced" : "Training HUD"}</p>
           <div className="flex items-center gap-2">
             {future ? <HudClock /> : null}
-            <button type="button" className="hud-btn hud-btn-icon" aria-label="Close training" onClick={() => setTab("plan")}>
-              <X className="size-5" />
-            </button>
+            {embedded ? null : (
+              <button type="button" className="hud-btn hud-btn-icon" aria-label="Close training" onClick={() => setTab("plan")}>
+                <X className="size-5" />
+              </button>
+            )}
           </div>
         </div>
         <div className="mt-1 flex items-start justify-between gap-3">
@@ -127,9 +135,11 @@ export function TrainView({ onOpenStore }: { onOpenStore?: () => void }) {
             <h1 className="font-display text-4xl leading-tight">{programTitle(body.goalKind)}</h1>
             <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{programHint(body.goalKind)}</p>
           </div>
-          <button type="button" className="hud-btn hud-btn-icon" aria-label="Exercise library" data-tour="library" onClick={() => setLibrary(true)}>
-            <Library className="size-5" />
-          </button>
+          {embedded ? null : (
+            <button type="button" className="hud-btn hud-btn-icon" aria-label="Exercise library" data-tour="library" onClick={() => setLibrary(true)}>
+              <Library className="size-5" />
+            </button>
+          )}
         </div>
         {summary ? (
           <p className="mt-3 text-xs tabular-nums text-muted-foreground">
@@ -146,7 +156,7 @@ export function TrainView({ onOpenStore }: { onOpenStore?: () => void }) {
             className={cn("hud-mode__btn", !advanced && "is-on")}
             onClick={() => setTrainHud("basic")}
           >
-            {future ? "Crew" : "Basic"}
+            {embedded ? "Simple" : future ? "Crew" : "Basic"}
           </button>
           <button
             type="button"
@@ -155,7 +165,7 @@ export function TrainView({ onOpenStore }: { onOpenStore?: () => void }) {
             className={cn("hud-mode__btn", advanced && "is-on")}
             onClick={() => setTrainHud("advanced")}
           >
-            {future ? "Command" : "Advanced"}
+            {embedded ? "Details" : future ? "Command" : "Advanced"}
           </button>
         </div>
         {advanced ? (
@@ -166,9 +176,9 @@ export function TrainView({ onOpenStore }: { onOpenStore?: () => void }) {
               <span className="hud-gauge__hint">working sets</span>
             </div>
             <div className="hud-gauge hud-gauge--dial" style={{ "--pct": Math.round(((summary?.done ?? 0) / Math.max(1, sessions.length)) * 100) } as CSSProperties}>
-              <span className="hud-gauge__lab">Closed</span>
+              <span className="hud-gauge__lab">Done</span>
               <span className="hud-gauge__val">{summary?.done ?? 0}</span>
-              <span className="hud-gauge__hint">of {sessions.length} days</span>
+              <span className="hud-gauge__hint">days finished</span>
             </div>
             <div className="hud-gauge hud-gauge--dial" style={{ "--pct": Math.round((ready.ready.length / 8) * 100) } as CSSProperties}>
               <span className="hud-gauge__lab">Ready</span>
@@ -176,9 +186,9 @@ export function TrainView({ onOpenStore }: { onOpenStore?: () => void }) {
               <span className="hud-gauge__hint">muscle groups</span>
             </div>
             <div className="hud-gauge hud-gauge--dial" style={{ "--pct": Math.min(100, ready.sore.length * 18) } as CSSProperties}>
-              <span className="hud-gauge__lab">Load</span>
+              <span className="hud-gauge__lab">Sore</span>
               <span className="hud-gauge__val">{ready.sore.length}</span>
-              <span className="hud-gauge__hint">still working</span>
+              <span className="hud-gauge__hint">still tired</span>
             </div>
             <div className="hud-gauge hud-gauge--dial" style={{ "--pct": plated ? 100 : 8 } as CSSProperties}>
               <span className="hud-gauge__lab">Dinner</span>
@@ -188,7 +198,7 @@ export function TrainView({ onOpenStore }: { onOpenStore?: () => void }) {
             <div className="hud-gauge hud-gauge--dial" style={{ "--pct": Math.round(((summary?.done ?? 0) / Math.max(1, (summary?.done ?? 0) + (summary?.left ?? 0) + (summary?.skipped ?? 0))) * 100) } as CSSProperties}>
               <span className="hud-gauge__lab">Week</span>
               <span className="hud-gauge__val">{Math.round(((summary?.done ?? 0) / Math.max(1, sessions.length)) * 100)}</span>
-              <span className="hud-gauge__hint">percent closed</span>
+              <span className="hud-gauge__hint">finished</span>
             </div>
           </div>
         ) : null}
@@ -198,12 +208,14 @@ export function TrainView({ onOpenStore }: { onOpenStore?: () => void }) {
           </p>
         ) : null}
         <div className="mt-3 flex gap-2">
-          <button type="button" className="hud-btn hud-btn-on h-11 flex-1 px-4 text-sm" onClick={() => setTab("fit")}>
-            Open Fuel
+          <button type="button" className="hud-btn hud-btn-on h-11 flex-1 px-4 text-sm" onClick={() => (onOpenFuel ? onOpenFuel() : setTab("fit"))}>
+            {embedded ? "Macros" : "Open Fuel"}
           </button>
-          <button type="button" className="hud-btn h-11 flex-1 px-4 text-sm" onClick={() => setLibrary(true)}>
-            Move library
-          </button>
+          {embedded ? null : (
+            <button type="button" className="hud-btn h-11 flex-1 px-4 text-sm" onClick={() => setLibrary(true)}>
+              Move library
+            </button>
+          )}
         </div>
       </header>
 
@@ -239,11 +251,11 @@ export function TrainView({ onOpenStore }: { onOpenStore?: () => void }) {
         <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
           {ready.sore.length ? (
             <>
-              Still working {ready.sore.slice(0, 3).map((id) => MUSCLE_LABEL[id].toLowerCase()).join(", ")}
+              {ready.sore.slice(0, 3).map((id) => MUSCLE_LABEL[id]).join(", ")} still tired
               {ready.ready.length ? " · " : ""}
             </>
           ) : null}
-          {ready.ready.length ? <>Ready {ready.ready.slice(0, 3).map((id) => MUSCLE_LABEL[id].toLowerCase()).join(", ")}</> : null}
+          {ready.ready.length ? <>{ready.ready.slice(0, 3).map((id) => MUSCLE_LABEL[id]).join(", ")} ready</> : null}
         </p>
       ) : null}
 
@@ -445,14 +457,14 @@ function SessionCard({
                         if (!last) return "";
                         const next = nextWorkingKg(lifts, m.moveId, prev, previousSessionForMove(lifts, m.moveId)?.feel);
                         const lastTxt = ` · last ${showWeight(last.weightKg)}`;
-                        const rir = last.rir != null ? ` @${last.rir}` : "";
+                        const left = last.rir != null ? ` · ${last.rir} left` : "";
                         const tryTxt =
                           next && next > last.weightKg
                             ? ` · try ${showWeight(next)}`
                             : next && next < last.weightKg
-                              ? ` · deload to ${showWeight(next)}`
+                              ? ` · try ${showWeight(next)}`
                               : "";
-                        return `${lastTxt}${rir}${tryTxt}`;
+                        return `${lastTxt}${left}${tryTxt}`;
                       })()}
                     </p>
                   </button>

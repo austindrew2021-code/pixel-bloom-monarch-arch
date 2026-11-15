@@ -76,6 +76,8 @@ export const Route = createFileRoute("/api/grocery-search")({
             reason: result.reason,
             pinnedUpc: result.pinnedUpc,
             live: result.live,
+            blocked: Boolean(result.blocked),
+            check: result.blocked ? (result.check === "busy" ? "busy" : "person") : undefined,
           });
         } catch {
           return Response.json({ options: [], choices: [], status: "ask", live: false });

@@ -172,6 +172,9 @@ export type Visibility = "private" | "followers" | "public";
 
 export type WorkoutKind = "lift" | "run" | "walk" | "ride" | "class" | "other";
 
+/** How a ride felt. The rider marks it. It is not a power-meter zone. */
+export type RideEffort = "easy" | "steady" | "tempo" | "climb" | "sprint";
+
 export type Workout = {
   id: string;
   date: string;
@@ -181,6 +184,11 @@ export type Workout = {
   volumeKg?: number;
   distanceKm?: number;
   source?: FitnessSourceId;
+  effort?: RideEffort;
+  climbM?: number;
+  /** Simplified GPS line. Empty when location was off. */
+  route?: { lat: number; lng: number }[];
+  avgHr?: number;
 };
 
 export type MacroGoal = {

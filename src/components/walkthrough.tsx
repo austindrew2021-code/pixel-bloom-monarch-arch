@@ -104,7 +104,7 @@ const STEPS: TourStep[] = [
     tab: "people",
     target: "people-head",
     title: "People",
-    body: "People opens on its own, framed in your kitchen color. Inside is a separate feed: stories, reels, posts, likes, comments, saves, and messages. Back in the corner returns you to the screen you left. Family seats are under Table.",
+    body: "People takes the whole screen, like its own app. Stories, reels, posts, likes, comments, saves, and messages all work there. Spoonful in the top left returns you to the screen you left. Family seats are under Table.",
   },
   {
     id: "desserts",
@@ -123,9 +123,9 @@ const STEPS: TourStep[] = [
   {
     id: "fuel",
     tab: "fit",
-    target: "nav-fit",
+    target: "fitness-head",
     title: "Fuel + Train",
-    body: "Calories and protein live here. Finish, skip, or miss a workout and tonight's dinner updates to match.",
+    body: "Fuel and Train take the whole screen, like their own app. Today shows calories, protein, carbs, and fat left. Spoonful in the top left returns you to the kitchen. Finish, skip, or miss a workout and dinner updates.",
     nextGen: true,
   },
   {
@@ -141,7 +141,7 @@ const STEPS: TourStep[] = [
     tab: "fit",
     target: "train-hud",
     title: "Train or Body",
-    body: "Train is this week's workouts. Body is your height, weight, and the goal that writes the week.",
+    body: "Train is this week’s workouts, on their own screen. Macros is the full count, your body, and the watch. Spoonful in the top left comes back here.",
     nextGen: true,
   },
   {
