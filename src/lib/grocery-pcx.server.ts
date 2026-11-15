@@ -10,7 +10,7 @@ import {
   type CartNeed,
   type StoreOption,
 } from "./grocery-pick.ts";
-import { compare, coverNeed, normalizeUpc, pickExact, shieldBlocks, type MatchProduct, type PickResult, type ShieldProfile } from "./grocery-match.ts";
+import { compare, coverNeed, lineSaysCanned, normalizeUpc, pickExact, shieldBlocks, type MatchProduct, type PickResult, type ShieldProfile } from "./grocery-match.ts";
 import { pcxIdentityFor, type PcxIdentity } from "./grocery-owner.server.ts";
 import { kmBetween, productPageUrl, isPcxCartId, type StoreBrand } from "./grocery-stores.ts";
 import { looksLikeBotWall } from "./store-page-pick.ts";
@@ -156,7 +156,7 @@ export async function liveStoreResult(rawInput: LiveInput): Promise<LiveResult> 
   };
   const leading = products
     // Exact matches whose title already clears the shields; their labels get read next.
-    .filter((p) => p.inStock !== false && compare(input.line.name, p, input.line.aisle).ok && shieldBlocks(p, input.profile, { ignoreDoubt: true }).length === 0)
+    .filter((p) => p.inStock !== false && compare(input.line.name, p, input.line.aisle, { canOk: lineSaysCanned(input.line) }).ok && shieldBlocks(p, input.profile, { ignoreDoubt: true }).length === 0)
     .map((p) => ({ p, cover: coverNeed(p, input.line, gramsPerCup) }))
     .filter((row) => row.cover)
     .sort((a, b) => a.cover!.totalCad - b.cover!.totalCad)

@@ -509,7 +509,21 @@ const BREADCRUMB_BAD: Record<string, RegExp> = {
   seafood: /prepared meals|frozen meals|snacks?|soups?|sauces?|bakery/i,
 };
 
-export function compare(needText: string, product: MatchProduct, aisle?: string): Verdict {
+/**
+ * k1 (Kitchen ruling, Nov 15): a line that itself says the item comes canned or tinned (a can/tin unit, or
+ * can/canned/tin/tinned in its name) accepts shelf titles saying "Canned"/"Tinned". "1 can chickpeas" ->
+ * "PC No Name Canned Chickpeas" is the same food. Lines without that wording keep rejecting canned.
+ */
+const CAN_UNIT = /^(?:cans?|tins?|canned|tinned)\.?$/i;
+const CAN_WORDS = /\b(?:cans?|canned|tins?|tinned)\b/i;
+const CANNED_TITLE = /\b(?:canned|tinned)\b/i;
+export function lineSaysCanned(line: { name: string; unit?: string }): boolean {
+  return CAN_UNIT.test((line.unit ?? "").trim()) || CAN_WORDS.test(line.name);
+}
+
+export type CompareOpts = { canOk?: boolean };
+
+export function compare(needText: string, product: MatchProduct, aisle?: string, opts: CompareOpts = {}): Verdict {
   const need = parseAttrs(needText);
   const prod = parseAttrs(product.name);
   const blocked: string[] = [];
@@ -578,7 +592,10 @@ export function compare(needText: string, product: MatchProduct, aisle?: string)
   if (!prodForm && needForm === "dried" && prod.category === "pantry") prodForm = "dried";
   if (needForm === "fresh") {
     if (prodForm === "frozen") differs.push("frozen, recipe means fresh");
-    else if (prodForm === "canned") differs.push("canned, recipe means fresh");
+    else if (prodForm === "canned") {
+      // k1: only a line with can/tin wording (and no explicit "fresh") takes a title that says Canned/Tinned.
+      if (!(opts.canOk && need.form === undefined && CANNED_TITLE.test(product.name))) differs.push("canned, recipe means fresh");
+    }
     else if (prodForm === "dried" && (prod.category === "produce" || need.category === "produce")) differs.push("dried, recipe means fresh");
   } else if (prodForm !== needForm) {
     if (!prodForm || prodForm === "fresh") missing.push(`doesn't say ${needForm}`);
@@ -934,6 +951,7 @@ export function pickExact(input: PickInput): PickResult {
   const generic = needsCutChoice(need);
   // A bare family name ("cheese") covers foods a cook wouldn't swap: ask which one.
   const vagueKind = vagueFood(need);
+  const canOk = lineSaysCanned(line);
   const avoidOrganic = need.avoidOrganic || (profile?.prefs ?? []).some((p) => p.toLowerCase() === "no-organic");
   for (const product of input.products) {
     if (product.inStock === false) continue;
@@ -945,7 +963,7 @@ export function pickExact(input: PickInput): PickResult {
       if (shields.some((reason) => !reason.endsWith("no ingredient list to check"))) realShieldHits++;
       continue;
     }
-    const v = compare(line.name, product, line.aisle);
+    const v = compare(line.name, product, line.aisle, { canOk });
     if (v.blocked.length) continue;
     const cover = coverNeed(product, line, gramsPerCup);
     const notes = [...v.differs, ...v.missing];
