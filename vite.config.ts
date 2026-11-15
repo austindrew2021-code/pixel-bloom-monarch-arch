@@ -119,7 +119,7 @@ function permissionsPolicyPlugin(): Plugin {
     name: "spoonful-permissions-policy",
     configureServer(server) {
       server.middlewares.use((_req, res, next) => {
-        res.setHeader("Permissions-Policy", "camera=(self), geolocation=(self), microphone=()");
+        res.setHeader("Permissions-Policy", "camera=(self), geolocation=(self), bluetooth=(self), microphone=()");
         next();
       });
     },
@@ -345,7 +345,7 @@ export default defineConfig(({ command, isPreview }) => ({
     port: 8080,
     strictPort: true,
     headers: {
-      "Permissions-Policy": "camera=(self), geolocation=(self), microphone=()",
+      "Permissions-Policy": "camera=(self), geolocation=(self), bluetooth=(self), microphone=()",
     },
   },
   preview: {

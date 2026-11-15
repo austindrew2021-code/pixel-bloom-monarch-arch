@@ -1,12 +1,12 @@
 /** House cooks that ship with the table so People is never an empty room. */
 
-export type HouseAuthor = { id: string; username: string; name: string };
+export type HouseAuthor = { id: string; username: string; name: string; avatar: string };
 
 export const HOUSE: HouseAuthor[] = [
-  { id: "house-mara", username: "mara", name: "Mara" },
-  { id: "house-lee", username: "lee", name: "Lee" },
-  { id: "house-nori", username: "nori", name: "Nori" },
-  { id: "house-atlas", username: "atlas", name: "Atlas" },
+  { id: "house-mara", username: "mara", name: "Mara", avatar: "/food/wy-chili.jpg" },
+  { id: "house-lee", username: "lee", name: "Lee", avatar: "/food/cacio-e-pepe.jpg" },
+  { id: "house-nori", username: "nori", name: "Nori", avatar: "/food/ca-fish-tacos.jpg" },
+  { id: "house-atlas", username: "atlas", name: "Atlas", avatar: "/food/blueberry-pancakes.jpg" },
 ];
 
 export type SocialKind = "photo" | "text" | "reel" | "story";
@@ -54,7 +54,7 @@ export const PLATE_PICKS = [
   "/food/ca-fish-tacos.jpg",
   "/food/butter-tarts.jpg",
   "/food/avocado-toast-egg.jpg",
-  "/food/beef-chili.jpg",
+  "/food/wy-chili.jpg",
   "/food/cacio-e-pepe.jpg",
   "/food/blueberry-pancakes.jpg",
 ];
@@ -66,7 +66,7 @@ export function housePosts(): SocialPost[] {
       authorId: "house-mara",
       kind: "photo",
       body: "Sunday chili, the long way. The leftovers are the point.",
-      media: "/food/beef-chili.jpg",
+      media: "/food/wy-chili.jpg",
       at: hoursAgo(2),
       baseLikes: 128,
       house: true,
@@ -135,7 +135,7 @@ export function houseStories(): SocialPost[] {
       authorId: "house-mara",
       kind: "story",
       body: "Chili, hour four.",
-      media: "/food/beef-chili.jpg",
+      media: "/food/wy-chili.jpg",
       at: hoursAgo(1),
       baseLikes: 0,
       house: true,

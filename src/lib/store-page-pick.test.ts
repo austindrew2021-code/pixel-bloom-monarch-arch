@@ -89,6 +89,8 @@ test("bot-wall copy is caught so fill can pause", () => {
 test("unit price /100g is not treated as the pack price", () => {
   assert.equal(parseCardPrice("$1.32/100g  $5.99"), 5.99);
   assert.equal(parseCardPrice("$6.49 $1.43 / 100 g"), 6.49);
+  assert.equal(parseCardPrice("Was $7.99 $3.99"), 3.99);
+  assert.equal(parseCardPrice("$5.99 Save $2"), 5.99);
 });
 
 test("Voila butter search skips plant Becel and prefers Compliments when prices are hidden", () => {

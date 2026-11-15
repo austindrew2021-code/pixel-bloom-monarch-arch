@@ -122,6 +122,126 @@ export function needEach(qty: number, unit: string): number | null {
 
 type Cover = { packs: number; totalCad: number; leftover: number; leftoverShare?: number; byWeight?: boolean };
 
+/** Dollars on a shelf card. Unit prices, "was" prices, and "save $2" are not the pack you pay. */
+export function lowestShelfPrice(text: string): number | null {
+  const cleaned = text
+    .replace(/,/g, "")
+    .replace(/\$\s*\d+(?:\.\d+)?\s*\/\s*[\d.]*\s*(?:g|kg|ml|l|oz|lb|ea|100\s*g)\b/gi, " ")
+    .replace(/\b(?:was|reg\.?|regular|orig\.?|original)\s*\$\s*\d+(?:\.\d{1,2})?/gi, " ")
+    .replace(/\b(?:save|off|earn)\s*\$\s*\d+(?:\.\d{1,2})?/gi, " ");
+  const nums: number[] = [];
+  for (const m of cleaned.matchAll(/\$\s*(\d+(?:\.\d{1,2})?)/g)) {
+    const n = Number(m[1]);
+    if (n > 0 && n < 500) nums.push(roundMoney(n));
+  }
+  if (!nums.length) return null;
+  const packs = nums.filter((n) => n >= 0.5);
+  const pool = packs.length ? packs : nums;
+  return Math.min(...pool);
+}
+
+export type ShelfPricing = {
+  price?: unknown;
+  wasPrice?: unknown;
+  displayPrice?: unknown;
+  memberOnlyPrice?: unknown;
+  mopDisplayPrice?: unknown;
+};
+
+export type ShelfDeal = { type?: string | null; text?: string | null; name?: string | null } | null;
+
+function asPackMoney(raw: unknown): number | null {
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "number") return raw > 0 && raw < 500 ? roundMoney(raw) : null;
+  if (typeof raw === "string") return lowestShelfPrice(raw.includes("$") ? raw : `$${raw}`);
+  if (typeof raw === "object") {
+    const row = raw as { value?: unknown; unit?: string; type?: string };
+    const unit = `${row.unit ?? ""} ${row.type ?? ""}`.toLowerCase();
+    if (/100\s*g|\bkg\b|\/|\blb\b|\bml\b/.test(unit)) return null;
+    if ("value" in row) return asPackMoney(row.value);
+  }
+  return null;
+}
+
+/** Price the cook pays for one pack: the lower of current, displayed, and member. Never the higher was-price, never $/100g. */
+export function payablePackPrice(
+  pricing?: ShelfPricing | null,
+  deal?: ShelfDeal,
+): { priceCad: number | null; dealCount?: number; dealCad?: number } {
+  const candidates: number[] = [];
+  for (const raw of [pricing?.price, pricing?.displayPrice, pricing?.memberOnlyPrice, pricing?.mopDisplayPrice]) {
+    const n = asPackMoney(raw);
+    if (n != null) candidates.push(n);
+  }
+  const dealText = `${deal?.text ?? ""} ${deal?.name ?? ""}`.trim();
+  let dealCount: number | undefined;
+  let dealCad: number | undefined;
+  const multi = dealText.match(/(\d{1,2})\s*(?:for|\/)\s*\$?\s*(\d+(?:\.\d{1,2})?)/i);
+  if (multi) {
+    const count = Number(multi[1]);
+    const cad = Number(multi[2]);
+    if (count >= 2 && count <= 24 && cad > 0 && cad < 500) {
+      dealCount = count;
+      dealCad = roundMoney(cad);
+    }
+  } else {
+    const sale = lowestShelfPrice(dealText);
+    if (sale != null) candidates.push(sale);
+  }
+  const was = asPackMoney(pricing?.wasPrice);
+  const save = dealText.match(/\b(?:save|off)\s*\$?\s*(\d+(?:\.\d{1,2})?)/i);
+  if (was != null && save) {
+    const cut = roundMoney(was - Number(save[1]));
+    if (cut > 0 && cut < was) candidates.push(cut);
+  }
+  if (!candidates.length) return { priceCad: null, dealCount, dealCad };
+  return { priceCad: Math.min(...candidates), dealCount, dealCad };
+}
+
+/** "Bag of 5" and "5 pack" count as five of the food, even when the size line says 1 ea. */
+export function packCountFromName(name: string): number | undefined {
+  const text = name.replace(/\s+/g, " ").trim();
+  const bag = text.match(/\b(?:bag|pack|package|box|tray)\s+of\s+(\d{1,2})\b/i);
+  const lead = text.match(/\b(\d{1,2})\s*[- ]?(?:pk|packs|pack|ct|count|counts)\b/i);
+  const raw = bag?.[1] ?? lead?.[1];
+  if (!raw) return undefined;
+  const n = Number(raw);
+  if (n >= 2 && n <= 48) return n;
+  return undefined;
+}
+
+export function shelfProduct(
+  brand: StoreBrand,
+  tile: {
+    brand?: string;
+    title?: string;
+    packageSizing?: string;
+    pricing?: ShelfPricing | null;
+    deal?: ShelfDeal;
+  },
+): MatchProduct | null {
+  const title = `${tile.brand ?? ""} ${tile.title ?? ""}`.replace(/\s+/g, " ").trim();
+  const pay = payablePackPrice(tile.pricing, tile.deal);
+  if (!title || pay.priceCad == null) return null;
+  const sizing = parsePackageSizing(tile.packageSizing || "");
+  const named = packCountFromName(title);
+  const each = named && named > 1 && (!sizing.each || sizing.each <= 1) ? named : sizing.each;
+  return {
+    brand,
+    name: title,
+    sizeLabel: sizing.sizeLabel || (each ? `${each} ct` : "1 ea"),
+    priceCad: pay.priceCad,
+    grams: sizing.grams,
+    ml: sizing.ml,
+    each,
+    unitHint: sizing.unitHint,
+    perKgCad: sizing.perKgCad,
+    unitPrice: sizing.unitPrice,
+    dealCount: pay.dealCount,
+    dealCad: pay.dealCad,
+  };
+}
+
 /**
  * Packs of one product that cover the recipe amount, or null when that can't be
  * confirmed. Per-kg trays use their weight (stated, or price ÷ $/kg), never
@@ -205,6 +325,8 @@ export function parsePackageSizing(raw: string): {
   if (ml) return { sizeLabel, unitHint, ml: Number(ml[1]), unitPrice };
   const each = lower.match(/^([\d.]+)\s*(ea|ct|count|pk|pack)\b/);
   if (each) return { sizeLabel, unitHint, each: Math.max(1, Math.round(Number(each[1]))), unitPrice };
+  const named = packCountFromName(sizeLabel);
+  if (named) return { sizeLabel, unitHint, each: named, unitPrice };
   return { sizeLabel, unitHint, unitPrice };
 }
 

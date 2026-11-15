@@ -13,6 +13,8 @@ export type StoreOptionsResult = {
   status: "pick" | "ask" | "unavailable";
   reason: string;
   live: boolean;
+  /** The store asked for a person check; the cook finishes it once on the store page. */
+  blocked?: boolean;
 };
 
 function catalogResult(store: NearbyStore, line: CartNeed, profile?: ShieldProfile): StoreOptionsResult {
@@ -54,14 +56,17 @@ export async function loadStoreOptions(
     });
     if (!res.ok) return catalog();
     const json = (await res.json()) as Partial<StoreOptionsResult>;
+    const blocked = Boolean(json.blocked);
     const options = Array.isArray(json.options) ? json.options : [];
     const choices = Array.isArray(json.choices) ? json.choices : [];
     if (json.status === "pick" && options.length) {
-      return { options, choices: [], status: "pick", reason: String(json.reason ?? ""), live: Boolean(json.live) };
+      return { options, choices: [], status: "pick", reason: String(json.reason ?? ""), live: Boolean(json.live), blocked };
     }
     if (json.status === "ask") {
-      return { options: [], choices, status: "ask", reason: String(json.reason ?? ""), live: Boolean(json.live) };
+      return { options: [], choices, status: "ask", reason: String(json.reason ?? ""), live: Boolean(json.live), blocked };
     }
+    // The store asked for a person check (detected server-side); the packed catalog keeps the same exact-match rules.
+    if (blocked) return { ...catalog(), blocked: true };
   } catch {
     // Store search is down — use the packed catalog (same exact-match rules).
   }

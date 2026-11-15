@@ -1,9 +1,10 @@
-import { ArrowLeftRight, Bookmark, ChevronDown, ChevronUp, History, Pause, Play, Plus, Share2, Timer, X } from "lucide-react";
+import { ArrowLeftRight, Bookmark, ChevronDown, ChevronUp, History, Pause, Play, Plus, Share2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { DEFAULT_BODY, kgFromLb, lbFromKg } from "@/lib/body";
+import { HeartRow, useHeartSession } from "@/components/live-signals";
+import { DEFAULT_BODY, kgFromLb, lbFromKg, type GoalKind } from "@/lib/body";
 import { EQUIPMENT_FILTER, equipmentLabel, exerciseById, substituteMoves, type Equipment } from "@/lib/exercises";
 import { isoDate } from "@/lib/fuel";
 import { pushNote } from "@/lib/notify";
@@ -21,11 +22,9 @@ import {
   ghostSet,
   isUnilateral,
   lastFinishedSession,
-  lineVolumeKg,
   logUnit,
   moveById,
   nextWorkingKg,
-  pctOfBest,
   platesPerSide,
   previousLine,
   previousSessionForMove,
@@ -42,7 +41,9 @@ import {
   type Muscle,
   type SessionFeel,
 } from "@/lib/lift";
-import { useSpoonful } from "@/lib/spoonful-store";
+import { prescribeSets, priorDates, proteinHold, repsForChosenWeight } from "@/lib/prescribe";
+import { nutritionForDate, useSpoonful } from "@/lib/spoonful-store";
+import { recoveryHold } from "@/lib/workout-safety";
 import { isPreviewChrome } from "@/lib/preview-chrome";
 import { cn } from "@/lib/utils";
 
@@ -65,6 +66,24 @@ export type LiftSeed = {
 export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () => void; seed?: LiftSeed }) {
   const body = useSpoonful((s) => s.body) ?? DEFAULT_BODY;
   const sessions = useSpoonful((s) => s.liftSessions);
+  const goal = useSpoonful((s) => s.goal);
+  const meals = useSpoonful((s) => s.meals);
+  const snacks = useSpoonful((s) => s.snacks);
+  const cookedDates = useSpoonful((s) => s.cookedDates);
+  const portionMultByDate = useSpoonful((s) => s.portionMultByDate);
+  const hold = proteinHold(
+    priorDates(isoDate(), 3).map((date) => ({
+      eaten: nutritionForDate(meals, date, snacks, portionMultByDate, cookedDates).protein,
+      target: goal.protein,
+    })),
+  );
+  const healthToday = useSpoonful((s) => s.healthByDate[isoDate()]);
+  const eased = hold || recoveryHold(healthToday);
+  const heart = useHeartSession(body.age, healthToday?.spo2 ?? 0);
+  const callRef = useRef(heart.call);
+  const skipRef = useRef(false);
+  callRef.current = heart.call;
+  skipRef.current = heart.override;
   const saveLiftSession = useSpoonful((s) => s.saveLiftSession);
   const notifyPrefs = useSpoonful((s) => s.notifyPrefs);
   const favMoves = useSpoonful((s) => s.favMoves);
@@ -88,10 +107,15 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
   const [restMove, setRestMove] = useState<string | null>(null);
   const restWas = useRef(0);
   const skipChime = useRef(false);
+  const restBoosted = useRef(false);
 
   useEffect(() => {
     if (!open) return;
-    setSession(seed?.moveIds.length ? sessionFromSeed(seed, sessions, body.weightKg, imperial) : emptySession());
+    setSession(
+      seed?.moveIds.length
+        ? sessionFromSeed(seed, sessions, body.weightKg, imperial, body.goalKind, eased)
+        : emptySession(),
+    );
     setRest(0);
     setRestHold(false);
     setRestMove(null);
@@ -109,11 +133,24 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
 
   useEffect(() => {
     if (rest <= 0 || restHold) return;
-    const id = window.setInterval(() => setRest((n) => Math.max(0, n - 1)), 1000);
+    const id = window.setInterval(() => {
+      setRest((n) => {
+        if (n <= 1) {
+          const call = callRef.current;
+          if (call.level === "stop" && !skipRef.current && !restBoosted.current) {
+            restBoosted.current = true;
+            return 30;
+          }
+          return 0;
+        }
+        return n - 1;
+      });
+    }, 1000);
     return () => window.clearInterval(id);
   }, [rest, restHold]);
 
   useEffect(() => {
+    if (restWas.current === 0 && rest > 0) restBoosted.current = false;
     if (restWas.current > 0 && rest === 0) {
       const skipped = skipChime.current;
       skipChime.current = false;
@@ -216,7 +253,6 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
     }
     return sec > 0 ? Math.max(1, Math.round(sec / 60)) : 0;
   }, [session, restPreset]);
-  const restCue = restMove ? exerciseById(restMove)?.steps[0] : undefined;
   /** What today's plan asked for on this move, so the goal stays visible while logging. */
   const targetFor = (moveId: string) => seed?.plan?.find((p) => p.moveId === moveId);
   const moves = useMemo(() => {
@@ -234,27 +270,32 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
 
   function addMove(moveId: string) {
     const move = moveById(moveId);
-    const prev = previousLine(sessions, moveId);
-    const prevSess = previousSessionForMove(sessions, moveId);
-    const defaultKg = openingKg(moveId, body.weightKg, imperial);
-    const suggested = nextWorkingKg(sessions, moveId, prev, prevSess?.feel);
-    const unit = logUnit(moveId);
-    const defaultReps = unit === "sec" ? 40 : unit === "m" ? 30 : 8;
-    const sets: LiftSet[] = prev?.sets.slice(0, 4).map((s, i) => ({
+    const planned = seed?.plan?.find((p) => p.moveId === moveId);
+    const prescribed = prescribeSets({
+      moveId,
+      sessions,
+      bodyKg: body.weightKg,
+      imperial,
+      goalKind: body.goalKind,
+      hold: eased,
+      planned,
+    });
+    const sets: LiftSet[] = prescribed.map((set) => ({
       id: nid(),
-      reps: s.reps,
-      weightKg: !s.warmup && i === (prev.sets.findIndex((x) => !x.warmup) ?? 0) && suggested ? suggested : s.weightKg,
+      reps: set.reps,
+      weightKg: set.weightKg,
       done: false,
-      warmup: s.warmup,
-    })) ?? [{ id: nid(), reps: defaultReps, weightKg: defaultKg, done: false }];
-    if (stalledAt(sessions, moveId) && suggested != null) {
-      const shown = imperial ? Math.round(lbFromKg(suggested)) : Math.round(suggested);
-      toast(`Two grinding sessions at that weight — dropping to ${shown} to reset`);
+      warmup: set.warmup,
+    }));
+    const work = prescribed.find((set) => !set.warmup);
+    if (stalledAt(sessions, moveId) && work) {
+      const shown = imperial ? Math.round(lbFromKg(work.weightKg)) : Math.round(work.weightKg);
+      toast(`Two grinding sessions at that weight — opening at ${shown}`);
     }
     setSession((cur) => ({
       ...cur,
       name: cur.lines.length === 0 ? (move?.name ?? "Lift") : cur.name,
-      lines: [...cur.lines, { id: nid(), moveId, sets, note: prev?.note }],
+      lines: [...cur.lines, { id: nid(), moveId, sets, note: previousLine(sessions, moveId)?.note }],
     }));
     setPicker(false);
     setQuery("");
@@ -266,7 +307,7 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
       toast("No session to copy yet");
       return;
     }
-    setSession(sessionFromSeed({ name: last.name, moveIds: last.lines.map((l) => l.moveId) }, sessions, body.weightKg, imperial));
+    setSession(sessionFromSeed({ name: last.name, moveIds: last.lines.map((l) => l.moveId) }, sessions, body.weightKg, imperial, body.goalKind, eased));
     toast(`Copied ${last.name}`);
   }
 
@@ -277,18 +318,24 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
       const next = { ...cur, name: tpl.name, lines: [...cur.lines] };
       for (const moveId of tpl.moves) {
         if (next.lines.some((l) => l.moveId === moveId)) continue;
-        const prev = previousLine(sessions, moveId);
-        const defaultKg = openingKg(moveId, body.weightKg, imperial);
+        const prescribed = prescribeSets({
+          moveId,
+          sessions,
+          bodyKg: body.weightKg,
+          imperial,
+          goalKind: body.goalKind,
+          hold: eased,
+        });
         next.lines.push({
           id: nid(),
           moveId,
-          sets:
-            prev?.sets.slice(0, 4).map((s) => ({
-              id: nid(),
-              reps: s.reps,
-              weightKg: s.weightKg,
-              done: false,
-            })) ?? [{ id: nid(), reps: 8, weightKg: defaultKg, done: false }],
+          sets: prescribed.map((set) => ({
+            id: nid(),
+            reps: set.reps,
+            weightKg: set.weightKg,
+            done: false,
+            warmup: set.warmup,
+          })),
         });
       }
       return next;
@@ -445,6 +492,17 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
     }));
   }
 
+  function markLastKind(line: LiftLine, kind: "amrap" | "fail") {
+    const last = [...line.sets].reverse().find((s) => s.done && !s.warmup);
+    if (!last) {
+      toast("Log a set first");
+      return;
+    }
+    const next = last.kind === kind ? "work" : kind;
+    patchSet(line.id, last.id, { kind: next });
+    toast(next === "amrap" ? "Marked all out" : next === "fail" ? "Marked missed reps" : "Back to a normal set");
+  }
+
   function restPause(line: LiftLine) {
     const last = line.sets.filter((s) => s.done && !s.warmup).at(-1);
     if (!last) {
@@ -469,21 +527,38 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
     }
   }
 
-  function bumpWeight(lineId: string, setId: string, dir: 1 | -1) {
-    const step = imperial ? kgFromLb(displayStep(true)) : displayStep(false);
+  function applyLoad(lineId: string, setId: string, weightKg: number) {
     setSession((cur) => ({
       ...cur,
-      lines: cur.lines.map((l) =>
-        l.id !== lineId
-          ? l
-          : {
-              ...l,
-              sets: l.sets.map((s) =>
-                s.id === setId ? { ...s, weightKg: Math.max(0, Math.round((s.weightKg + dir * step) * 4) / 4) } : s,
-              ),
-            },
-      ),
+      lines: cur.lines.map((line) => {
+        if (line.id !== lineId) return line;
+        return {
+          ...line,
+          sets: line.sets.map((set) => {
+            if (set.id !== setId) return set;
+            const next = { ...set, weightKg: Math.max(0, weightKg) };
+            if (set.warmup || set.done) return next;
+            const reps = repsForChosenWeight({
+              moveId: line.moveId,
+              weightKg: next.weightKg,
+              sessions,
+              goalKind: body.goalKind,
+              plannedReps: targetFor(line.moveId)?.reps,
+              exceptId: cur.id,
+            });
+            return reps == null ? next : { ...next, reps };
+          }),
+        };
+      }),
     }));
+  }
+
+  function bumpWeight(lineId: string, setId: string, dir: 1 | -1) {
+    const step = imperial ? kgFromLb(displayStep(true)) : displayStep(false);
+    const line = session.lines.find((item) => item.id === lineId);
+    const set = line?.sets.find((item) => item.id === setId);
+    if (!set) return;
+    applyLoad(lineId, setId, Math.round((set.weightKg + dir * step) * 4) / 4);
   }
 
   function logSet(line: LiftLine, set: LiftSet) {
@@ -566,36 +641,32 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
 
   return (
     <div
-      className="lift-deck fixed inset-0 z-50 flex flex-col bg-background text-foreground"
+      className="lift-deck fixed inset-0 z-50 flex max-w-full flex-col overflow-x-hidden bg-background text-foreground"
       role="dialog"
       aria-modal="true"
       aria-label="Workout"
     >
       <header className="pt-[max(0.75rem,env(safe-area-inset-top))]">
         <div className="flex items-stretch">
-          <div className="flex h-14 min-w-0 flex-1 items-center justify-between gap-2 px-3">
+          <div className="flex min-h-14 min-w-0 flex-1 items-center justify-between gap-2 px-3 py-2">
             <Button variant="ghost" size="icon" className="shrink-0" onClick={onClose} aria-label="Close lift">
               <X />
             </Button>
             <div className="min-w-0 text-center">
-              <p className="truncate text-xs font-medium uppercase tracking-[0.16em] text-spark">
+              <p className="truncate text-xs text-muted-foreground">
                 {formatElapsed(now - session.startedAt)}
+                {setProgress.total > 0 ? ` · ${setProgress.done} of ${setProgress.total}` : ""}
+                {etaMin > 0 ? ` · about ${etaMin} min left` : ""}
               </p>
-              <p className="truncate font-display text-xl tabular-nums leading-tight">
-                {volumeDisp} {imperial ? "lb" : "kg"}
-                {volDelta != null && volume > 0 ? (
-                  <span className="ml-1 text-sm font-sans font-medium text-muted-foreground">
-                    {volDelta > 0 ? "↑" : volDelta < 0 ? "↓" : "·"}
-                    {volDelta === 0 ? "same" : `${Math.abs(volDelta)}%`}
-                  </span>
-                ) : null}
+              <p className="font-display text-3xl tabular-nums leading-none">
+                {volumeDisp}
+                <span className="ml-1 font-sans text-sm font-medium text-muted-foreground">
+                  {imperial ? "lb" : "kg"} lifted
+                  {volDelta != null && volume > 0
+                    ? ` ${volDelta > 0 ? "↑" : volDelta < 0 ? "↓" : ""}${volDelta === 0 ? "same" : `${Math.abs(volDelta)}%`}`
+                    : ""}
+                </span>
               </p>
-              {setProgress.total > 0 ? (
-                <p className="text-[11px] tabular-nums text-muted-foreground">
-                  {setProgress.done}/{setProgress.total} sets
-                  {etaMin > 0 ? ` · ~${etaMin} min` : ""}
-                </p>
-              ) : null}
             </div>
             <Button variant="ghost" size="icon" className="shrink-0" onClick={() => setHistory(true)} aria-label="History">
               <History />
@@ -633,41 +704,40 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
       </header>
 
       {rest > 0 ? (
-        <div className="lift-rest-bar mx-4 mt-3 px-3 py-3 text-spark-foreground">
-          <div className="flex items-center justify-between gap-2">
-            <span className="flex items-center gap-2 text-sm font-medium">
-              <Timer className="size-4" /> {restHold ? "Paused" : "Rest"}
-            </span>
-            <span className="font-display text-2xl tabular-nums">{rest}s</span>
-            <div className="flex items-center gap-1">
-              <button type="button" className="lift-rest h-11 min-w-11 text-sm font-medium" onClick={() => setRest((n) => Math.max(0, n - 15))}>
-                −15
-              </button>
-              <button
-                type="button"
-                className="lift-rest flex h-11 min-w-11 items-center justify-center"
-                onClick={() => setRestHold((h) => !h)}
-                aria-label={restHold ? "Resume rest" : "Pause rest"}
-              >
-                {restHold ? <Play className="size-4" /> : <Pause className="size-4" />}
-              </button>
-              <button
-                type="button"
-                className="lift-rest h-11 min-w-11 text-sm font-medium"
-                onClick={() => {
-                  skipChime.current = true;
-                  setRestHold(false);
-                  setRest(0);
-                }}
-              >
-                Skip
-              </button>
-              <button type="button" className="lift-rest h-11 min-w-11 text-sm font-medium" onClick={() => setRest((n) => n + 15)}>
-                +15
-              </button>
-            </div>
+        <div className="lift-rest-bar relative z-10 mx-4 mt-3 shrink-0 bg-card px-3 py-3 text-foreground">
+          <p className="text-xs font-medium text-muted-foreground">{restHold ? "Rest paused" : "Rest"}</p>
+          <p className="mt-1 font-display text-4xl tabular-nums leading-none">{rest}s</p>
+          {restMove ? (
+            <p className="mt-1 truncate text-sm text-muted-foreground">{moveById(restMove)?.name}</p>
+          ) : null}
+          <div className="mt-3 grid grid-cols-4 gap-2">
+            <button type="button" className="lift-rest h-11 text-sm font-medium" onClick={() => setRest((n) => Math.max(0, n - 15))}>
+              −15
+            </button>
+            <button
+              type="button"
+              className="lift-rest flex h-11 items-center justify-center"
+              onClick={() => setRestHold((h) => !h)}
+              aria-label={restHold ? "Resume rest" : "Pause rest"}
+            >
+              {restHold ? <Play className="size-4" /> : <Pause className="size-4" />}
+            </button>
+            <button
+              type="button"
+              className="lift-rest h-11 text-sm font-medium"
+              onClick={() => {
+                skipChime.current = true;
+                heart.acknowledge();
+                setRestHold(false);
+                setRest(0);
+              }}
+            >
+              {heart.call.level === "stop" ? "Skip anyway" : "Skip"}
+            </button>
+            <button type="button" className="lift-rest h-11 text-sm font-medium" onClick={() => setRest((n) => n + 15)}>
+              +15
+            </button>
           </div>
-          {restCue ? <p className="mt-2 text-xs leading-relaxed opacity-90">{restCue}</p> : null}
         </div>
       ) : (
         <div className="chip-row mx-4 mt-3">
@@ -687,7 +757,20 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 pb-28">
+      <div className="mx-4 mt-2">
+        <HeartRow
+          age={body.age}
+          bpm={heart.bpm}
+          spo2={healthToday?.spo2}
+          state={heart.state}
+          onConnect={() => void heart.connect()}
+          onType={heart.setBpm}
+          override={heart.override}
+          onOverride={heart.acknowledge}
+        />
+      </div>
+
+      <div className="relative z-0 min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-4 pb-28">
         {session.lines.length === 0 ? (
           <section className="mb-4">
             <h2 className="font-display text-xl">Start with a template</h2>
@@ -719,68 +802,49 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
           const prev = previousLine(sessions, line.moveId, session.id);
           const prevSess = previousSessionForMove(sessions, line.moveId, session.id);
           const best = bestEpley(sessions, line.moveId);
-          const lineVol = lineVolumeKg(line);
           const unit = logUnit(line.moveId);
           const stalled = stalledAt(sessions, line.moveId, session.id);
           const nextKg = nextWorkingKg(sessions, line.moveId, prev, prevSess?.feel, session.id);
           const paired = line.pairId ? session.lines.find((l) => l.pairId === line.pairId && l.id !== line.id) : undefined;
           return (
-            <section key={line.id} id={`lift-line-${line.id}`} className="lift-card mb-4 p-4">
-              <div className="flex items-start gap-3">
-                {ex ? (
-                  <img src={ex.image} alt="" className="h-14 w-14 shrink-0 rounded-xl bg-muted object-cover" />
+            <section key={line.id} id={`lift-line-${line.id}`} className="lift-card mb-4 min-w-0 overflow-x-hidden p-4">
+              <div className="min-w-0">
+                <h2 className="font-display text-2xl leading-tight">{move?.name ?? line.moveId}</h2>
+                {targetFor(line.moveId) ? (
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Aim for {targetFor(line.moveId)!.sets} sets of {targetFor(line.moveId)!.reps}
+                  </p>
                 ) : null}
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-start gap-1">
-                    <h2 className="min-w-0 flex-1 font-display text-xl leading-tight">{move?.name ?? line.moveId}</h2>
-                    <button
-                      type="button"
-                      className="lift-icon flex size-11 shrink-0 items-center justify-center text-muted-foreground"
-                      onClick={() => moveLine(line.id, -1)}
-                      aria-label="Move exercise up"
-                    >
-                      <ChevronUp className="size-4" />
-                    </button>
-                    <button
-                      type="button"
-                      className="lift-icon flex size-11 shrink-0 items-center justify-center text-muted-foreground"
-                      onClick={() => moveLine(line.id, 1)}
-                      aria-label="Move exercise down"
-                    >
-                      <ChevronDown className="size-4" />
-                    </button>
-                  </div>
-                  {paired ? (
-                    <p className="mt-0.5 text-xs font-medium text-spark">Superset with {moveById(paired.moveId)?.name}</p>
-                  ) : null}
-                  {targetFor(line.moveId) ? (
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      Target {targetFor(line.moveId)!.sets} × {targetFor(line.moveId)!.reps}
-                    </p>
-                  ) : null}
-                  {prev ? (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Last{" "}
-                      {prev.sets
-                        .filter((s) => s.done)
-                        .map((s) => {
-                          const w = imperial ? Math.round(lbFromKg(s.weightKg)) : Math.round(s.weightKg);
-                          const rir = s.rir != null ? `@${s.rir}` : "";
-                          return `${s.warmup ? "W" : ""}${s.reps}${unit === "reps" ? "×" : unit === "sec" ? "s " : "m "}${w}${rir}`;
-                        })
-                        .join("  ")}
-                      {nextKg && nextKg !== prev.sets.filter((s) => s.done && !s.warmup).at(-1)?.weightKg
-                        ? ` · ${stalled ? "deload to" : "try"} ${imperial ? Math.round(lbFromKg(nextKg)) : nextKg}`
-                        : ""}
-                      {prevSess?.feel ? ` · felt ${prevSess.feel === "right" ? "on it" : prevSess.feel}` : ""}
-                    </p>
-                  ) : null}
-                </div>
-                <p className="text-xs tabular-nums text-muted-foreground">
-                  {imperial ? Math.round(lbFromKg(lineVol)) : Math.round(lineVol)} {imperial ? "lb" : "kg"}
-                </p>
+                {ex?.steps?.[0] ? <p className="mt-1 text-sm leading-snug text-muted-foreground">{ex.steps[0]}</p> : null}
+                {paired ? (
+                  <p className="mt-1 text-xs font-medium text-spark">Back to back with {moveById(paired.moveId)?.name}</p>
+                ) : null}
+                {prev ? (
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Last time{" "}
+                    {prev.sets
+                      .filter((s) => s.done && !s.warmup)
+                      .slice(-3)
+                      .map((s) => {
+                        const w = imperial ? Math.round(lbFromKg(s.weightKg)) : Math.round(s.weightKg);
+                        return `${s.reps} × ${w}`;
+                      })
+                      .join(", ")}
+                    {nextKg && nextKg !== prev.sets.filter((s) => s.done && !s.warmup).at(-1)?.weightKg
+                      ? ` · ${stalled ? "try a little less" : "try"} ${imperial ? Math.round(lbFromKg(nextKg)) : nextKg}`
+                      : ""}
+                  </p>
+                ) : (
+                  <p className="mt-1 text-sm text-muted-foreground">First time. Log the weight that felt solid.</p>
+                )}
               </div>
               <ul className="mt-3 space-y-2">
+                <li className="grid grid-cols-[1.25rem_4.25rem_minmax(0,1fr)_4.25rem] gap-1 text-xs text-muted-foreground">
+                  <span />
+                  <span className="text-center">{unit === "sec" ? "Sec" : unit === "m" ? "Meters" : "Reps"}</span>
+                  <span className="text-center">{imperial ? "Pounds" : "Kilograms"}</span>
+                  <span />
+                </li>
                 {line.sets.map((set, i) => {
                   const shown = imperial ? Math.round(lbFromKg(set.weightKg)) : Math.round(set.weightKg * 10) / 10;
                   const est = epley1rm(set.weightKg, set.reps);
@@ -791,7 +855,7 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
                   const ticking = tickOf?.setId === set.id;
                   return (
                     <li key={set.id}>
-                      <div className="grid grid-cols-[1.75rem_minmax(0,3.6rem)_minmax(0,1fr)_auto] items-center gap-1.5">
+                      <div className="grid min-w-0 grid-cols-[1.25rem_4.25rem_minmax(0,1fr)_4.25rem] items-center gap-1">
                         <span className="text-center text-xs tabular-nums text-muted-foreground">
                           {set.warmup ? "W" : set.kind === "drop" ? "D" : set.kind === "fail" ? "F" : set.kind === "amrap" ? "A" : workIndex + 1}
                         </span>
@@ -819,25 +883,25 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
                         <div className="flex min-w-0 items-center">
                           <button
                             type="button"
-                            className="lift-qty lift-qty-minus flex h-12 w-9 shrink-0 items-center justify-center bg-background text-lg leading-none shadow-[var(--shadow-border)]"
+                            className="lift-qty lift-qty-minus flex h-12 w-8 shrink-0 items-center justify-center bg-background text-lg leading-none"
                             onClick={() => bumpWeight(line.id, set.id, -1)}
                             aria-label="Decrease weight"
                           >
                             −
                           </button>
                           <Input
-                            className="h-12 min-w-0 rounded-none px-1 text-center tabular-nums shadow-none"
+                            className="h-12 min-w-0 rounded-none px-0.5 text-center tabular-nums shadow-none"
                             inputMode="decimal"
                             value={String(shown)}
                             onChange={(e) => {
                               const n = Number(e.target.value);
-                              patchSet(line.id, set.id, { weightKg: imperial ? kgFromLb(n || 0) : n || 0 });
+                              applyLoad(line.id, set.id, imperial ? kgFromLb(n || 0) : n || 0);
                             }}
                             aria-label={imperial ? "Pounds" : "Kilograms"}
                           />
                           <button
                             type="button"
-                            className="lift-qty lift-qty-plus flex h-12 w-9 shrink-0 items-center justify-center bg-background text-lg leading-none shadow-[var(--shadow-border)]"
+                            className="lift-qty lift-qty-plus flex h-12 w-8 shrink-0 items-center justify-center bg-background text-lg leading-none"
                             onClick={() => bumpWeight(line.id, set.id, 1)}
                             aria-label="Increase weight"
                           >
@@ -848,7 +912,7 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
                           type="button"
                           onClick={() => logSet(line, set)}
                           className={cn(
-                            "lift-log h-12 min-w-14 shrink-0 px-3 text-sm font-medium",
+                            "lift-log h-12 min-w-0 px-1 text-sm font-medium",
                             set.done
                               ? "bg-primary text-primary-foreground"
                               : beat
@@ -856,16 +920,15 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
                                 : "bg-background shadow-[var(--shadow-border)]",
                           )}
                         >
-                          {set.done ? (isPr ? "PR" : "Done") : beat ? "Beat" : "Log"}
+                          {set.done ? (isPr ? "PR" : "Done") : "Log"}
                         </button>
                       </div>
                       {ghost && !set.done ? (
-                        <p className="mt-0.5 pl-8 text-xs tabular-nums text-muted-foreground">
-                          last {ghost.reps}
-                          {unit === "reps" ? " × " : unit === "sec" ? "s @ " : "m @ "}
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Last time {ghost.reps} {unit === "sec" ? "sec" : unit === "m" ? "m" : "reps"} at{" "}
                           {imperial ? Math.round(lbFromKg(ghost.weightKg)) : Math.round(ghost.weightKg * 10) / 10}
-                          {ghost.rir != null ? ` @${ghost.rir}` : ""}
-                          {best > 0 && pctOfBest(set.weightKg, best) != null ? ` · ${pctOfBest(set.weightKg, best)}%` : ""}
+                          {imperial ? " lb" : " kg"}
+                          {ghost.rir != null ? ` · ${ghost.rir} reps left` : ""}
                         </p>
                       ) : null}
                       {isUnilateral(line.moveId) ? (
@@ -886,66 +949,38 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
                         </div>
                       ) : null}
                       {set.done && !set.warmup ? (
-                        <div className="mt-1 flex items-center gap-1 pl-8">
-                          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">RIR</span>
-                          {[4, 3, 2, 1, 0].map((n) => (
-                            <button
-                              key={n}
-                              type="button"
-                              onClick={() => patchSet(line.id, set.id, { rir: n })}
-                              className={cn(
-                                "lift-chip h-8 min-w-8 px-2 text-xs tabular-nums",
-                                set.rir === n ? "bg-spark text-spark-foreground" : "bg-background shadow-[var(--shadow-border)]",
-                              )}
-                            >
-                              {n}
-                            </button>
-                          ))}
-                          <button
-                            type="button"
-                            onClick={() =>
-                              patchSet(line.id, set.id, { kind: set.kind === "drop" ? "work" : "drop" })
-                            }
-                            className={cn(
-                              "lift-chip ml-auto h-8 px-2 text-[10px] uppercase tracking-wide",
-                              set.kind === "drop" ? "bg-spark text-spark-foreground" : "text-muted-foreground",
-                            )}
-                          >
-                            Drop
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              patchSet(line.id, set.id, { kind: set.kind === "fail" ? "work" : "fail" })
-                            }
-                            className={cn(
-                              "lift-chip h-8 px-2 text-[10px] uppercase tracking-wide",
-                              set.kind === "fail" ? "bg-spark text-spark-foreground" : "text-muted-foreground",
-                            )}
-                          >
-                            Fail
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              patchSet(line.id, set.id, { kind: set.kind === "amrap" ? "work" : "amrap" })
-                            }
-                            className={cn(
-                              "lift-chip h-8 px-2 text-[10px] uppercase tracking-wide",
-                              set.kind === "amrap" ? "bg-spark text-spark-foreground" : "text-muted-foreground",
-                            )}
-                          >
-                            AMRAP
-                          </button>
+                        <div className="mt-2">
+                          <p className="text-xs text-muted-foreground">Reps you still had</p>
+                          <div className="mt-1 grid grid-cols-5 gap-1">
+                            {[4, 3, 2, 1, 0].map((n) => (
+                              <button
+                                key={n}
+                                type="button"
+                                onClick={() => patchSet(line.id, set.id, { rir: n })}
+                                className={cn(
+                                  "lift-chip h-11 text-sm tabular-nums",
+                                  set.rir === n ? "bg-spark text-spark-foreground" : "bg-background",
+                                )}
+                              >
+                                {n}
+                              </button>
+                            ))}
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground">4 was easy. 0 means nothing left.</p>
                         </div>
+                      ) : null}
+                      {set.kind === "drop" || set.kind === "fail" || set.kind === "amrap" ? (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {set.kind === "drop" ? "Lighter set" : set.kind === "fail" ? "Missed reps" : "All out"}
+                        </p>
                       ) : null}
                     </li>
                   );
                 })}
               </ul>
               {move?.bar ? (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Per side{" "}
+                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                  Plates each side{" "}
                   {platesPerSide(
                     Math.max(0, ...line.sets.filter((s) => !s.warmup).map((s) => s.weightKg)),
                     imperial,
@@ -955,20 +990,24 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
                 </p>
               ) : null}
               {line.sets.some((s) => s.done && !s.warmup && s.reps > 1) ? (
-                <p className="mt-2 text-xs tabular-nums text-muted-foreground">
-                  Est 1RM{" "}
+                <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+                  Estimated max{" "}
                   {imperial
                     ? Math.round(lbFromKg(Math.max(...line.sets.filter((s) => s.done && !s.warmup).map((s) => epley1rm(s.weightKg, s.reps)))))
                     : Math.round(Math.max(...line.sets.filter((s) => s.done && !s.warmup).map((s) => epley1rm(s.weightKg, s.reps))))}{" "}
                   {imperial ? "lb" : "kg"}
-                  {best > 0
-                    ? ` · best ${imperial ? Math.round(lbFromKg(best)) : Math.round(best)}`
-                    : ""}
+                  {best > 0 ? ` · best ${imperial ? Math.round(lbFromKg(best)) : Math.round(best)}` : ""}
                 </p>
               ) : null}
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <Button variant="ghost" onClick={() => addSet(line)}>
                   <Plus /> Add set
+                </Button>
+                <Button variant="ghost" onClick={() => moveLine(line.id, -1)} aria-label="Move exercise up">
+                  <ChevronUp />
+                </Button>
+                <Button variant="ghost" onClick={() => moveLine(line.id, 1)} aria-label="Move exercise down">
+                  <ChevronDown />
                 </Button>
                 <Button variant="ghost" onClick={() => addLadder(line)}>
                   Warm-up
@@ -989,16 +1028,22 @@ export function LiftSheet({ open, onClose, seed }: { open: boolean; onClose: () 
                 <>
                   <div className="mt-2 flex flex-wrap gap-2">
                     <Button variant="ghost" onClick={() => pairLine(line)}>
-                      Pair
+                      Back to back
                     </Button>
                     <Button variant="ghost" onClick={() => fillRest(line)}>
-                      Fill rest
+                      Copy last set
                     </Button>
                     <Button variant="ghost" onClick={() => addDrop(line)}>
-                      Drop 20%
+                      Lighter set
                     </Button>
                     <Button variant="ghost" onClick={() => restPause(line)}>
-                      Rest-pause
+                      Short rest
+                    </Button>
+                    <Button variant="ghost" onClick={() => markLastKind(line, "amrap")}>
+                      All out
+                    </Button>
+                    <Button variant="ghost" onClick={() => markLastKind(line, "fail")}>
+                      Missed reps
                     </Button>
                   </div>
                   <Input
@@ -1180,64 +1225,38 @@ function emptySession(): LiftSession {
   };
 }
 
-/**
- * A first-session starting load, before there's any history to go on. Scaled
- * by how much movement it is: a barbell squat and a lateral raise both
- * opening at 95 lb means editing every line before you can start.
- */
-function openingKg(moveId: string, bodyKg: number, imperial: boolean): number {
-  const ex = exerciseById(moveId);
-  if (ex?.bodyweight) return bodyKg;
-  const lb = (ex?.compound ?? 2) >= 4 ? 95 : (ex?.compound ?? 2) >= 2 ? 45 : 20;
-  return imperial ? kgFromLb(lb) : Math.round(kgFromLb(lb) / 2.5) * 2.5;
-}
-
-/**
- * Turns a prescription like "6-8", "5" or "30-45s" into the number the first
- * set opens on — the bottom of the range, the rep count you have to hit
- * before the range counts. Falls back to a sane default per logging unit.
- */
-function plannedReps(reps: string | undefined, unit: "reps" | "sec" | "m"): number {
-  const low = reps ? Number.parseInt(reps, 10) : Number.NaN;
-  if (Number.isFinite(low) && low > 0) return low;
-  return unit === "sec" ? 40 : unit === "m" ? 30 : 8;
-}
-
 function sessionFromSeed(
   seed: LiftSeed,
   sessions: LiftSession[],
   bodyKg: number,
   imperial: boolean,
+  goalKind: GoalKind,
+  hold: boolean,
 ): LiftSession {
   const lines: LiftLine[] = [];
   for (const moveId of seed.moveIds) {
     const move = moveById(moveId);
     if (!move) continue;
-    const prev = previousLine(sessions, moveId);
-    const prevSess = previousSessionForMove(sessions, moveId);
-    const defaultKg = openingKg(moveId, bodyKg, imperial);
-    const suggested = nextWorkingKg(sessions, moveId, prev, prevSess?.feel);
-    const unit = logUnit(moveId);
     const planned = seed.plan?.find((p) => p.moveId === moveId);
-    const defaultReps = plannedReps(planned?.reps, unit);
     lines.push({
       id: nid(),
       moveId,
-      note: prev?.note,
-      sets:
-        prev?.sets.slice(0, 4).map((s, i) => ({
-          id: nid(),
-          reps: s.reps,
-          weightKg: !s.warmup && i === (prev.sets.findIndex((x) => !x.warmup) ?? 0) && suggested ? suggested : s.weightKg,
-          done: false,
-          warmup: s.warmup,
-        })) ??
-        Array.from({ length: Math.max(1, planned?.sets ?? 1) }, () => ({
-          id: nid(),
-          reps: defaultReps,
-          weightKg: defaultKg,
-          done: false,
-        })),
+      note: previousLine(sessions, moveId)?.note,
+      sets: prescribeSets({
+        moveId,
+        sessions,
+        bodyKg,
+        imperial,
+        goalKind,
+        hold,
+        planned,
+      }).map((set) => ({
+        id: nid(),
+        reps: set.reps,
+        weightKg: set.weightKg,
+        done: false,
+        warmup: set.warmup,
+      })),
     });
   }
   return {

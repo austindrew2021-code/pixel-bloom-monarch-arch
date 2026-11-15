@@ -184,6 +184,7 @@ function OrderSheet({
   const [storeCartId, setStoreCartId] = useState<string | null>(null);
   const [storeCount, setStoreCount] = useState(0);
   const [payOpen, setPayOpen] = useState(false);
+  const [storeAsk, setStoreAsk] = useState("");
   // Above the `if (!store) return null` below, and it has to stay there: read
   // after the early return, this hook only runs on the renders where a store is
   // picked, so choosing one changes the hook count between renders and React
@@ -199,6 +200,7 @@ function OrderSheet({
     setStoreCartId(null);
     setStoreCount(0);
     setPayOpen(false);
+    setStoreAsk("");
   }, [store?.id]);
 
   if (!store) return null;
@@ -229,6 +231,8 @@ function OrderSheet({
         product: pick?.name ?? item.pickName,
         url,
         qty: pick?.packs ?? item.packs,
+        needQty: item.qty,
+        needUnit: item.unit,
       };
     });
   }
@@ -290,6 +294,11 @@ function OrderSheet({
       setChoices(result.choices);
       setAskReason(result.status === "pick" ? "" : result.reason);
       setLive(result.live);
+      if (result.blocked) {
+        setStoreAsk(
+          "The store asked to confirm you’re a person. Open it once and finish that check. Spoonful will not keep asking.",
+        );
+      }
     } catch {
       setOptions([]);
       setChoices([]);
@@ -340,44 +349,53 @@ function OrderSheet({
   async function addAll() {
     if (leftover.length === 0 || addingAll) return;
     setAddingAll(true);
+    setStoreAsk("");
     try {
       const nextChosen: Record<string, StoreOption> = {};
       const mem = useSpoonful.getState().bagMemory;
       const unsure: GroceryPick[] = [];
-      await Promise.all(
-        leftover.map(async (item) => {
-          const result = await loadStoreOptions(picked, item, profile);
-          // No silent substitution: only an exact match is added without a tap.
-          if (result.status !== "pick" || result.options.length === 0) {
-            unsure.push(item);
-            return;
-          }
-          const remembered = mem[item.name.trim().toLowerCase()];
-          const top =
-            (remembered ? result.options.find((o) => o.name === remembered.pickName) : undefined) ?? result.options[0];
-          if (top) nextChosen[pickKey(item)] = top;
-        }),
-      );
+      let blocked = false;
+      // One line at a time (Grok workspace): a store person check stops the fill instead of piling on tries.
+      for (const item of leftover) {
+        const result = await loadStoreOptions(picked, item, profile);
+        if (result.blocked) {
+          blocked = true;
+          setStoreAsk(
+            "The store asked to confirm you’re a person. Open it once, finish that check, then tap Fill again. Spoonful stops here so the check doesn’t get worse.",
+          );
+          break;
+        }
+        // No silent substitution: only an exact match is added without a tap.
+        if (result.status !== "pick" || result.options.length === 0) {
+          unsure.push(item);
+          continue;
+        }
+        const cheapest = result.options[0];
+        const remembered = mem[item.name.trim().toLowerCase()];
+        const rememberedOpt = remembered ? result.options.find((o) => o.name === remembered.pickName) : undefined;
+        // The remembered exact match wins only when it isn't pricier than the cheapest exact match.
+        const top =
+          rememberedOpt && cheapest && rememberedOpt.totalCad <= cheapest.totalCad + 0.009 ? rememberedOpt : cheapest;
+        if (top) nextChosen[pickKey(item)] = top;
+      }
       setChosen((prev) => ({ ...prev, ...nextChosen }));
-      markMany(leftover.filter((item) => nextChosen[pickKey(item)]));
+      const chosenItems = leftover.filter((item) => nextChosen[pickKey(item)]);
+      markMany(chosenItems);
       const merged = { ...chosen, ...nextChosen };
-      const packed = leftover
+      const packed = chosenItems
         .map((item) => nextChosen[pickKey(item)])
         .filter((option): option is StoreOption => Boolean(option))
         .map((option) => ({ id: option.id, packs: option.packs, addUrl: option.addUrl }));
-      const ok = packed.length ? await pushStore(packed, merged) : false;
-      packBag(storeCartId, merged);
-      useSpoonful.getState().rememberBag(
-        leftover.map((item) => {
-          const opt = nextChosen[pickKey(item)];
-          return {
-            name: item.name,
-            pickName: opt?.name ?? item.pickName,
-            packs: opt?.packs ?? item.packs,
-            pickCad: opt?.totalCad ?? item.pickCad,
-          };
-        }),
-      );
+      const ok = !blocked && packed.length ? await pushStore(packed, merged) : false;
+      if (!blocked) packBag(storeCartId, merged);
+      if (chosenItems.length) {
+        useSpoonful.getState().rememberBag(
+          chosenItems.map((item) => {
+            const opt = nextChosen[pickKey(item)]!;
+            return { name: item.name, pickName: opt.name, packs: opt.packs, pickCad: opt.totalCad };
+          }),
+        );
+      }
       const askNote = unsure.length
         ? ` ${unsure.length} ${unsure.length === 1 ? "item needs" : "items need"} your pick (no exact match): ${unsure
             .map((item) => item.name)
@@ -385,11 +403,13 @@ function OrderSheet({
             .join(", ")}${unsure.length > 3 ? "…" : ""}.`
         : "";
       toast(
-        (ok
-          ? `${packed.length} packs are in the ${picked.name} cart.`
-          : storeCartOff()
-            ? `List packed for ${picked.name}. Store carts aren’t available in Spoonful yet — your list is saved.`
-            : `List packed for ${picked.name}. Pay keeps it on the store screen.`) + askNote,
+        blocked
+          ? "Store check — finish it on the store page, then fill again."
+          : (ok
+              ? `${packed.length} packs are in the ${picked.name} cart.`
+              : storeCartOff()
+                ? `List packed for ${picked.name}. Store carts aren’t available in Spoonful yet — your list is saved.`
+                : `List packed for ${picked.name}. Pay keeps it on the store screen.`) + askNote,
       );
     } finally {
       setAddingAll(false);
@@ -490,6 +510,11 @@ function OrderSheet({
                   {sent.size} of {cart.items.length} packed
                   {storeCount > 0 ? ` · ${storeCount} in the ${store.name} cart` : ""}
                 </p>
+                {storeAsk ? (
+                  <p className="mt-2 text-sm text-muted-foreground" data-testid="grocery-store-ask">
+                    {storeAsk}
+                  </p>
+                ) : null}
                 {leftover.length > 0 ? (
                   <Button
                     className="mt-3 w-full"
@@ -522,7 +547,7 @@ function OrderSheet({
                     <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                       {helios
                         ? "Superstore holds the bag on their cart. Fill cart packs it from here — you can leave, then pay when we ping you."
-                        : "Co-op, Sobeys, Walmart, and Voilà open inside Spoonful. Sign in once if the store asks. After the aisle looks like a store, Spoonful fills the cart on that same page and pings you when it’s ready. If a check appears, finish it — we resume on our own."}
+                        : "Co-op, Sobeys, Walmart, and Voilà open inside Spoonful. Sign in once if the store asks. After the aisle looks like a store, Spoonful fills the cart on that same page. If a check appears, finish it yourself — Spoonful stops until you tap Continue, so the store doesn’t see more tries."}
                     </p>
                     <Button className="mt-3 w-full" variant="spark" onClick={payAsGuest} data-testid="grocery-pay-guest">
                       Pay as guest

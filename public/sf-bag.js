@@ -501,11 +501,40 @@ window.__sfBag = function (b64) {
   function parsePrice(text) {
     var s = String(text || "")
       .replace(/,/g, "")
-      .replace(/\$\s*\d+(?:\.\d+)?\s*\/\s*[\d.]*\s*(g|kg|ml|l|oz|lb|ea|100\s*g)/gi, " ");
-    var m = s.match(/\$\s*(\d+(?:\.\d{1,2})?)/);
-    if (!m) return null;
-    var n = Number(m[1]);
-    return n > 0 && n < 500 ? n : null;
+      .replace(/\$\s*\d+(?:\.\d+)?\s*\/\s*[\d.]*\s*(g|kg|ml|l|oz|lb|ea|100\s*g)/gi, " ")
+      .replace(/\b(?:was|reg\.?|regular|orig\.?|original)\s*\$\s*\d+(?:\.\d{1,2})?/gi, " ")
+      .replace(/\b(?:save|off|earn)\s*\$\s*\d+(?:\.\d{1,2})?/gi, " ");
+    var nums = [];
+    var re = /\$\s*(\d+(?:\.\d{1,2})?)/g;
+    var m;
+    while ((m = re.exec(s))) {
+      var n = Number(m[1]);
+      if (n > 0 && n < 500) nums.push(n);
+    }
+    if (!nums.length) return null;
+    var packs = nums.filter(function (n) {
+      return n >= 0.5;
+    });
+    var pool = packs.length ? packs : nums;
+    var best = pool[0];
+    for (var i = 1; i < pool.length; i++) if (pool[i] < best) best = pool[i];
+    return best;
+  }
+  function packCount(name) {
+    var text = String(name || "");
+    var bag = text.match(/\b(?:bag|pack|package|box|tray)\s+of\s+(\d{1,2})\b/i);
+    var lead = text.match(/\b(\d{1,2})\s*[- ]?(?:pk|packs|pack|ct|count|counts)\b/i);
+    var raw = (bag && bag[1]) || (lead && lead[1]);
+    var n = raw ? Number(raw) : 0;
+    return n >= 2 && n <= 48 ? n : 1;
+  }
+  function coverCost(price, name, it) {
+    var unit = String((it && it.needUnit) || "").toLowerCase();
+    var counted = !unit || unit === "ea" || unit === "each" || unit === "ct" || unit === "count";
+    var need = Math.max(1, Number(it && (it.needQty != null ? it.needQty : 1)) || 1);
+    var each = packCount(name);
+    if (!counted) return price;
+    return Math.max(1, Math.ceil(need / each)) * price;
   }
   function houseBias(name) {
     return /compliments|no name|great value|\bselection\b/.test(String(name || "").toLowerCase()) ? 0 : 1;
@@ -569,7 +598,11 @@ window.__sfBag = function (b64) {
       });
     return (t[0] || "").slice(0, 180);
   }
-  function findBestAdd(query, prefer) {
+  function onPage(el) {
+    var r = el.getBoundingClientRect();
+    return r.width >= 12 && r.height >= 12;
+  }
+  function findBestAdd(query, prefer, it) {
     var nodes = document.querySelectorAll(
       'button, [role="button"], a, input[type="button"], [data-testid*="add" i], [aria-label*="add" i]',
     );
@@ -585,7 +618,7 @@ window.__sfBag = function (b64) {
       .slice(0, 2);
     for (var i = 0; i < nodes.length; i++) {
       var el = nodes[i];
-      if (!isAddButton(el) || !visible(el)) continue;
+      if (!isAddButton(el) || !onPage(el)) continue;
       var card = cardOf(el);
       var name = cardName(card);
       var text = ((card && card.innerText) || name || "").replace(/\s+/g, " ");
@@ -594,8 +627,8 @@ window.__sfBag = function (b64) {
       var price = parsePrice(text);
       var pref = 0;
       var low = (name || "").toLowerCase();
-      for (var p = 0; p < preferBits.length; p++) if (low.indexOf(preferBits[p]) >= 0) pref -= 0.8;
-      var score = (price == null ? 80 : price) + houseBias(name) * 0.45 + pref;
+      for (var p = 0; p < preferBits.length; p++) if (low.indexOf(preferBits[p]) >= 0) pref -= 0.15;
+      var score = (price == null ? 80 : coverCost(price, name || text, it)) + pref;
       if (score < bestPrice) {
         bestPrice = score;
         best = el;
@@ -725,6 +758,19 @@ window.__sfBag = function (b64) {
     window.__sfBagBusy = false;
     paint();
   }
+  function stopForWall() {
+    hushTimers();
+    set("sf-bag-hold", "1");
+    set("sf-bag-fill", "0");
+    set("sf-bag-pause", "bot");
+    set("sf-bag-auto", "0");
+    window.__sfBagBusy = false;
+    paint();
+    if (get("sf-bag-need", "") !== "1") {
+      set("sf-bag-need", "1");
+      pingNeed("The store asked if you’re a person. Finish that check, then tap Continue. Spoonful will not keep trying.");
+    }
+  }
   function markAndHop(it, idx) {
     var d = doneSet();
     d.add(keyOf(it, idx));
@@ -753,18 +799,9 @@ window.__sfBag = function (b64) {
     hopNext();
   }
   function hopNext() {
-    if (get("sf-bag-fill", "") !== "1") return;
-    var kind = wallKind();
-    if (kind === "failed") {
-      pauseFill("bot");
-      if (get("sf-bag-need", "") !== "1") {
-        set("sf-bag-need", "1");
-        pingNeed("The store needs a sign-in or check. Finish it — Spoonful will keep packing after that.");
-      }
-      return;
-    }
-    if (kind === "check") {
-      later(hopNext, 5000);
+    if (get("sf-bag-hold") === "1" || get("sf-bag-fill", "") !== "1") return;
+    if (wallKind()) {
+      stopForWall();
       return;
     }
     if (get("sf-bag-auto") === "1") {
@@ -775,10 +812,9 @@ window.__sfBag = function (b64) {
       return;
     }
     later(function () {
-      if (get("sf-bag-fill", "") !== "1") return;
+      if (get("sf-bag-hold") === "1" || get("sf-bag-fill", "") !== "1") return;
       if (wallKind()) {
-        if (wallKind() === "failed") pauseFill("bot");
-        else later(hopNext, 5000);
+        stopForWall();
         return;
       }
       var n = nextUndone();
@@ -793,20 +829,12 @@ window.__sfBag = function (b64) {
     }, jitter(9000, 14000));
   }
   function tryAdd(it, idx, attempt) {
-    if (get("sf-bag-fill", "") !== "1") {
+    if (get("sf-bag-hold") === "1" || get("sf-bag-fill", "") !== "1") {
       window.__sfBagBusy = false;
       return;
     }
-    var kind = wallKind();
-    if (kind === "failed") {
-      pauseFill("bot");
-      return;
-    }
-    if (kind === "check") {
-      window.__sfBagBusy = false;
-      later(function () {
-        tryAdd(it, idx, attempt);
-      }, 4500);
+    if (wallKind()) {
+      stopForWall();
       return;
     }
     tryApiAdd(
@@ -819,7 +847,7 @@ window.__sfBag = function (b64) {
         var query = searchQuery(it);
         var want = wantOf(it);
         var prefer = it.product || "";
-        var add = findBestAdd(query, prefer) || (query !== want ? findBestAdd(want, prefer) : null);
+        var add = findBestAdd(query, prefer, it) || (query !== want ? findBestAdd(want, prefer, it) : null);
         if (add) {
           humanClick(add, function () {
             markAndHop(it, idx);
@@ -871,19 +899,10 @@ window.__sfBag = function (b64) {
     );
   }
   function maybeFill() {
-    if (get("sf-bag-fill", "") !== "1") return;
+    if (get("sf-bag-hold") === "1" || get("sf-bag-fill", "") !== "1") return;
     if (window.__sfBagBusy) return;
-    var kind = wallKind();
-    if (kind === "failed") {
-      pauseFill("bot");
-      if (get("sf-bag-need", "") !== "1") {
-        set("sf-bag-need", "1");
-        pingNeed("The store needs a sign-in or check. Finish it — Spoonful will keep packing after that.");
-      }
-      return;
-    }
-    if (kind === "check") {
-      later(maybeFill, 4000);
+    if (wallKind()) {
+      stopForWall();
       return;
     }
     var idx = nextUndone();
@@ -909,14 +928,9 @@ window.__sfBag = function (b64) {
     if (window.__sfBagWatch) return;
     window.__sfBagWatch = window.setInterval(function () {
       if (!document.getElementById("sf-bag") && (window.__sfBagItems || []).length) paint();
-      if (wallKind() === "failed") {
-        if (get("sf-bag-fill", "") === "1" || get("sf-bag-pause", "") !== "bot") {
-          pauseFill("bot");
-          if (get("sf-bag-need", "") !== "1") {
-            set("sf-bag-need", "1");
-            pingNeed("The store needs a sign-in or check. Finish it — Spoonful will keep packing after that.");
-          }
-        }
+      if (get("sf-bag-hold") === "1") return;
+      if (wallKind()) {
+        stopForWall();
         return;
       }
       if (get("sf-bag-auto") === "1" && get("sf-bag-fill", "") !== "1" && aisleReady() && nextUndone() >= 0) {
@@ -1063,10 +1077,12 @@ window.__sfBag = function (b64) {
         paint();
         return;
       }
-      if (wallKind() === "failed") {
-        pauseFill("bot");
+      if (wallKind()) {
+        stopForWall();
         return;
       }
+      set("sf-bag-hold", "");
+      set("sf-bag-need", "");
       set("sf-bag-fill", "1");
       set("sf-bag-pause", "");
       set("sf-bag-min", "1");
@@ -1092,7 +1108,7 @@ window.__sfBag = function (b64) {
     var hint = el("p", "margin:8px 0 0;font-size:12px;line-height:1.4;opacity:.85");
     if (c.pause === "bot") {
       hint.textContent =
-        "The store locked a check because fill was moving too fast. Do not refresh this page. Finish the check if you can, or go back in Spoonful and open the store again. Then tap Continue — it adds three packs, then waits.";
+        "The store asked if you’re a person. Finish that check on this page. Don’t refresh. Spoonful has stopped so it doesn’t make the check worse. When the aisle is a store again, tap Continue.";
     } else if (c.pause === "batch") {
       hint.textContent =
         "Added a few, then stopped so the store still sees a shopper. Tap Continue for the next three.";

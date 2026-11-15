@@ -11,7 +11,7 @@ import { giftUntilFrom, isGiftCode, mintGiftCode, normalizeGiftCode } from "./gi
 import type { CountryId, LocaleId } from "./i18n";
 import { DEFAULT_GOAL, addNutrition, applyHealthToFuel, dayFuel, emptyNutrition, isoDate, rankForFuel, workoutKcal } from "./fuel.ts";
 import { mealsCountTowardFuel, snackCountsTowardFuel } from "./eaten.ts";
-import { liveStepBump, pullFromSource, pullHealthDay, recoveryLabel, catchUpSteps, type HealthDay } from "./fitness-sync.ts";
+import { liveStepBump, pullFromSource, pullHealthDay, recoveryLabel, catchUpSteps, blankHealthDay, type HealthDay } from "./fitness-sync.ts";
 import { hasNativeHealth, requestNativeHealth } from "./native-health.ts";
 import { mealsFromPantry } from "./pantry-match.ts";
 import { isAlwaysHave, isBasicStaple } from "./grocery-always.ts";
@@ -39,6 +39,7 @@ import { coachSay, DEFAULT_COACH, normalizeCoach, type CoachEvent, type CoachPre
 import { plateChangeKind, plateChangeWhy, type KitchenUpdate } from "./kitchen-log.ts";
 import type { NearbyStore } from "./grocery-stores";
 import type { FitnessSourceId, SyncAccess } from "./devices";
+import { normalizeTrainFocus, type TrainFocus } from "./train-focus.ts";
 import { DEFAULT_NAV_PINS, normalizePins, type NavPinId } from "./nav.ts";
 import { mealSavings, plateCost, recipeSafe } from "./shield.ts";
 import { postKitchenEvent } from "./family.ts";
@@ -72,6 +73,7 @@ import type {
   PrefId,
   Protein,
   Recipe,
+  RideEffort,
   Snack,
   Workout,
   WorkoutKind,
@@ -154,6 +156,7 @@ type SpoonfulState = {
   dinnerHour: number;
   coach: CoachPrefs;
   trainHud: "basic" | "advanced";
+  trainFocus: TrainFocus;
   fitnessSource: FitnessSourceId | null;
   lastSyncAt: string | null;
   syncAccess: SyncAccess | null;
@@ -272,6 +275,7 @@ type SpoonfulState = {
   finishWalkthrough: () => void;
   resetWalkthrough: () => void;
   setSteps: (date: string, steps: number) => void;
+  logSleep: (hours: number) => void;
   addWorkout: (input: {
     date: string;
     kind: WorkoutKind;
@@ -279,6 +283,10 @@ type SpoonfulState = {
     kcal?: number;
     volumeKg?: number;
     distanceKm?: number;
+    effort?: RideEffort;
+    climbM?: number;
+    route?: { lat: number; lng: number }[];
+    avgHr?: number;
     source?: FitnessSourceId;
     silent?: boolean;
   }) => void;
@@ -331,6 +339,7 @@ type SpoonfulState = {
   setNotifyPrefs: (patch: Partial<NotifyPrefs>) => void;
   setCoach: (patch: Partial<CoachPrefs>) => void;
   setTrainHud: (mode: "basic" | "advanced") => void;
+  setTrainFocus: (focus: TrainFocus) => void;
   setDinnerHour: (hour: number) => void;
   setFitnessSource: (id: FitnessSourceId | null) => void;
   linkFitness: (id: FitnessSourceId, access: SyncAccess) => void;
@@ -554,6 +563,7 @@ export const useSpoonful = create<SpoonfulState>()(
       dinnerHour: 18,
       coach: DEFAULT_COACH,
       trainHud: "advanced",
+      trainFocus: "weights",
       fitnessSource: null,
       lastSyncAt: null,
       syncAccess: null,
@@ -1222,6 +1232,20 @@ export const useSpoonful = create<SpoonfulState>()(
       favoriteStore: (store) => set({ favStore: store }),
       setSteps: (date, steps) =>
         set((s) => ({ stepsByDate: { ...s.stepsByDate, [date]: Math.max(0, Math.round(steps)) } })),
+      logSleep: (hours) => {
+        const today = isoDate();
+        const sleepHours = Math.round(Math.min(14, Math.max(0, hours)) * 10) / 10;
+        set((s) => {
+          const prev = s.healthByDate[today] ?? blankHealthDay(today);
+          return {
+            healthByDate: pruneHealth({
+              ...s.healthByDate,
+              [today]: { ...prev, date: today, sleepHours },
+            }),
+          };
+        });
+        if (sleepHours > 0 && get().nextGen) get().replateFromFuel([today]);
+      },
       addWorkout: (input) => {
         const body = get().body;
         const minutes = Math.max(5, input.minutes);
@@ -1250,6 +1274,10 @@ export const useSpoonful = create<SpoonfulState>()(
               kcal,
               volumeKg: input.volumeKg,
               distanceKm: input.distanceKm,
+              ...(input.effort ? { effort: input.effort } : {}),
+              ...(input.climbM && input.climbM > 0 ? { climbM: Math.round(input.climbM) } : {}),
+              ...(input.route && input.route.length > 1 ? { route: input.route } : {}),
+              ...(input.avgHr && input.avgHr > 0 ? { avgHr: Math.round(input.avgHr) } : {}),
               source: input.source ?? s.fitnessSource ?? undefined,
             },
           ],
@@ -1731,6 +1759,7 @@ export const useSpoonful = create<SpoonfulState>()(
           dinnerHour: s.dinnerHour,
           coach: s.coach,
           trainHud: s.trainHud,
+          trainFocus: s.trainFocus,
           fitnessSource: s.fitnessSource,
           lastSyncAt: s.lastSyncAt,
           syncAccess: s.syncAccess,
@@ -2050,6 +2079,7 @@ export const useSpoonful = create<SpoonfulState>()(
       setNotifyPrefs: (patch) => set((s) => ({ notifyPrefs: { ...s.notifyPrefs, ...patch } })),
       setCoach: (patch) => set((s) => ({ coach: normalizeCoach({ ...s.coach, ...patch }) })),
       setTrainHud: (mode) => set({ trainHud: mode === "basic" ? "basic" : "advanced" }),
+      setTrainFocus: (focus) => set({ trainFocus: normalizeTrainFocus(focus) }),
       setDinnerHour: (hour) => set({ dinnerHour: Math.max(15, Math.min(22, hour)) }),
       setFitnessSource: (id) => {
         set({ fitnessSource: id, syncAccess: id ? get().syncAccess ?? "while-using" : null });
@@ -2088,6 +2118,7 @@ export const useSpoonful = create<SpoonfulState>()(
           notifyPrefs: { ...current.notifyPrefs, ...(p.notifyPrefs ?? {}) },
           coach: normalizeCoach(p.coach ?? current.coach),
           trainHud: p.trainHud === "basic" ? "basic" : "advanced",
+          trainFocus: normalizeTrainFocus(p.trainFocus),
           seats: Array.isArray(p.seats) ? p.seats : current.seats,
           chefBonus: typeof p.chefBonus === "number" ? p.chefBonus : 0,
           chefBonusWeek: typeof p.chefBonusWeek === "string" ? p.chefBonusWeek : current.chefBonusWeek,
@@ -2143,6 +2174,7 @@ export const useSpoonful = create<SpoonfulState>()(
         dinnerHour: s.dinnerHour,
         coach: s.coach,
         trainHud: s.trainHud,
+        trainFocus: s.trainFocus,
         fitnessSource: s.fitnessSource,
         lastSyncAt: s.lastSyncAt,
         syncAccess: s.syncAccess,

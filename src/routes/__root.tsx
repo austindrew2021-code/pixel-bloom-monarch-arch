@@ -19,7 +19,7 @@ export const Route = createRootRoute({
         name: "description",
         content: "The meal planner that plates dinner from your fridge and your workout. Simple Kitchen or Next Gen Fuel.",
       },
-      { name: "permissions-policy", content: "camera=(self), geolocation=(self), microphone=()" },
+      { name: "permissions-policy", content: "camera=(self), geolocation=(self), bluetooth=(self), microphone=()" },
       { name: "robots", content: "noindex, nofollow, noarchive" },
       { name: "googlebot", content: "noindex, nofollow, noarchive" },
       { name: "apple-mobile-web-app-capable", content: "yes" },

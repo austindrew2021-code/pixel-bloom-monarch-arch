@@ -771,7 +771,44 @@ function trayGrams(p: MatchProduct): number | undefined {
   return undefined;
 }
 
+/**
+ * Multi-buy on one loose item ("5 for $3.99", from the Grok workspace's shelf pricing):
+ * when the line is counted (not weighed or measured), buying the deal group can cost less.
+ * Only lowers a confirmed cover's price; never makes an unconfirmed match coverable.
+ */
+function withMultiBuy(p: MatchProduct, need: ReturnType<typeof needAmount>, cover: Cover | null): Cover | null {
+  if (!cover || cover.byWeight || p.grams || p.ml || !(need.each || need.packages)) return cover;
+  const size = Math.max(1, p.each || 1);
+  const dealCount = p.dealCount;
+  const dealCad = p.dealCad;
+  if (size !== 1 || !dealCount || !dealCad || dealCount < 2 || dealCad >= p.priceCad * dealCount - 0.009) return cover;
+  const packs = cover.packs;
+  let bestPacks = packs;
+  let bestTotal = cover.totalCad;
+  const groups = Math.ceil(packs / dealCount);
+  if (groups * dealCad < bestTotal - 0.009) {
+    bestTotal = groups * dealCad;
+    bestPacks = groups * dealCount;
+  }
+  const full = Math.floor(packs / dealCount);
+  const rem = packs - full * dealCount;
+  if (full > 0 && rem > 0) {
+    const mixed = full * dealCad + rem * p.priceCad;
+    if (mixed < bestTotal - 0.009) {
+      bestTotal = mixed;
+      bestPacks = full * dealCount + rem;
+    }
+  }
+  if (bestPacks === packs && bestTotal === cover.totalCad) return cover;
+  const extra = bestPacks - packs;
+  return { ...cover, packs: bestPacks, totalCad: round2(bestTotal), leftover: cover.leftover + extra };
+}
+
 export function coverNeed(p: MatchProduct, line: NeedLine, gramsPerCup?: number): Cover | null {
+  return withMultiBuy(p, needAmount(line, gramsPerCup), coverNeedBase(p, line, gramsPerCup));
+}
+
+function coverNeedBase(p: MatchProduct, line: NeedLine, gramsPerCup?: number): Cover | null {
   const need = needAmount(line, gramsPerCup);
   const share = (left: number, amount: number) => (amount > 0 ? left / amount : 0);
   // Sold by weight at the counter: you buy exactly the weight needed.
