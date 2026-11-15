@@ -1,6 +1,6 @@
 export type PlaceHit = { name: string; lat: number; lng: number };
-/** k2: what the server fn returns. `busy` = this instance's queue was full, nothing was asked upstream. */
-export type PlaceAnswer = { hits: PlaceHit[]; busy: boolean };
+/** k2/r2: server fn answer. `busy` = this instance's queue was full (no upstream call). `failed` = the map service errored (network/timeout/non-OK). */
+export type PlaceAnswer = { hits: PlaceHit[]; busy: boolean; failed?: boolean };
 
 type Deps = {
   fetchImpl: typeof fetch;
@@ -37,7 +37,8 @@ export function makePlaceSearch(deps: Deps) {
   let lastAt = -Infinity;
   let pending = 0;
 
-  async function fetchOnce(q: string): Promise<PlaceHit[]> {
+  type FetchResult = { rows: PlaceHit[]; failed?: boolean };
+  async function fetchOnce(q: string): Promise<FetchResult> {
     const wait = lastAt + PLACE_GAP_MS - deps.now();
     if (wait > 0) await deps.sleep(wait);
     lastAt = deps.now();
@@ -53,21 +54,26 @@ export function makePlaceSearch(deps: Deps) {
         },
         signal: AbortSignal.timeout(8000),
       });
-      if (!res.ok) return [];
+      // k2 r2: a non-OK (429, 5xx, …) is a service failure, not "no place matched". Not cached.
+      if (!res.ok) return { rows: [], failed: true };
       const rows = (await res.json()) as { display_name?: string; lat?: string; lon?: string }[];
-      return rows
-        .map((row) => ({
-          name: String(row.display_name ?? "").split(",").slice(0, 2).join(",").trim(),
-          lat: Number(row.lat),
-          lng: Number(row.lon),
-        }))
-        .filter((row) => row.name && Number.isFinite(row.lat) && Number.isFinite(row.lng));
+      return {
+        rows: rows
+          .map((row) => ({
+            name: String(row.display_name ?? "").split(",").slice(0, 2).join(",").trim(),
+            lat: Number(row.lat),
+            lng: Number(row.lon),
+          }))
+          .filter((row) => row.name && Number.isFinite(row.lat) && Number.isFinite(row.lng)),
+      };
     } catch {
-      return [];
+      // Network error or timeout (AbortSignal.timeout). Not cached.
+      return { rows: [], failed: true };
     }
   }
 
   // k2: `lookup` tells a full queue (busy) apart from a real empty answer; cache and throttle are unchanged.
+  // k2 r2: an upstream failure is `failed` (distinct wording), and is not cached.
   async function lookup(raw: string): Promise<PlaceAnswer> {
     const key = normalizePlaceQuery(raw);
     const hit = cache.get(key);
@@ -77,34 +83,36 @@ export function makePlaceSearch(deps: Deps) {
     pending++;
     const run = queue.then(() => {
       const again = cache.get(key);
-      if (again && deps.now() - again.at < PLACE_TTL_MS) return again.rows;
-      return fetchOnce(key).then((rows) => {
-        if (rows.length) {
+      if (again && deps.now() - again.at < PLACE_TTL_MS) return { rows: again.rows } as FetchResult;
+      return fetchOnce(key).then((result) => {
+        if (result.rows.length) {
           if (cache.size >= PLACE_CACHE_MAX) cache.delete(cache.keys().next().value as string);
-          cache.set(key, { at: deps.now(), rows });
+          cache.set(key, { at: deps.now(), rows: result.rows });
         }
-        return rows;
+        return result;
       });
     });
     queue = run.catch(() => undefined);
     return run
-      .then((hits) => ({ hits, busy: false }))
+      .then((result) => ({ hits: result.rows, busy: false, ...(result.failed ? { failed: true } : {}) }))
       .finally(() => {
         pending--;
       });
   }
 
-  /** Same as before k2: just the hits ([] when empty or busy). */
+  /** Same as before k2: just the hits ([] when empty, busy, or failed). */
   const search = (raw: string): Promise<PlaceHit[]> => lookup(raw).then((answer) => answer.hits);
   return Object.assign(search, { lookup });
 }
 
 export const PLACE_BUSY_TEXT = "Place search is busy, try again in a moment.";
 export const PLACE_EMPTY_TEXT = "No place matched that. Drag the map, or tap it.";
+export const PLACE_DOWN_TEXT = "Place search isn't working right now, try again in a moment.";
 
-/** k2: the client's wording for a search answer; nothing to say when there are hits. */
+/** k2/r2: the client's wording for a search answer; nothing to say when there are hits. */
 export function placeAnswerText(answer: PlaceAnswer): string | null {
   if (answer.busy) return PLACE_BUSY_TEXT;
+  if (answer.failed) return PLACE_DOWN_TEXT;
   return answer.hits.length ? null : PLACE_EMPTY_TEXT;
 }
 

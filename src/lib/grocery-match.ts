@@ -529,7 +529,7 @@ export function lineSaysCanned(line: { name: string; unit?: string }): boolean {
   return CAN_UNIT.test((line.unit ?? "").trim()) || CAN_WORDS.test(line.name);
 }
 
-export type CompareOpts = { canOk?: boolean };
+export type CompareOpts = { canOk?: boolean; unit?: string };
 
 /** k2 (e): packaged-product forms. "purée"/"pureed" are puree. */
 const PRODUCT_FORMS: [string, RegExp][] = [
@@ -542,9 +542,28 @@ const PRODUCT_FORMS: [string, RegExp][] = [
   ["sauce", /\bsauce\b/],
 ];
 const FORM_EXEMPT = new Set(["meat", "seafood"]);
+/** Forms that *are* the product (not a cut). "applesauce" is "apple sauce". */
+const PRODUCT_IS_FORM = new Set(["paste", "sauce", "puree"]);
+const JAR_UNIT = /^(?:jars?)$/i;
+/** Space-insensitive hay for form words: "applesauce" reads as "apple sauce". Only paste/sauce/puree, so "wholesome" is not "whole". */
+function formHay(text: string): string {
+  return norm(text).replace(/\b([a-z]{3,})(sauce|paste|pureed|puree)\b/g, "$1 $2");
+}
 export function productForms(text: string): Set<string> {
-  const t = norm(text);
+  const t = formHay(text);
   return new Set(PRODUCT_FORMS.filter(([, re]) => re.test(t)).map(([id]) => id));
+}
+
+/**
+ * k2 r2: the named-form rule applies only on a canned/jarred line (unit can/cans/tin/tins/jar/jars,
+ * or the line says canned/tinned) or when the form itself is the product (paste, sauce, puree).
+ * Fresh lines ("crushed garlic", "diced onion", "diced tomatoes") skip it. Meat and seafood stay exempt.
+ */
+export function formRuleApplies(line: { name: string; unit?: string }, category?: string): boolean {
+  if (FORM_EXEMPT.has(category ?? "")) return false;
+  if (JAR_UNIT.test((line.unit ?? "").trim()) || lineSaysCanned(line)) return true;
+  const forms = productForms(line.name);
+  return [...forms].some((f) => PRODUCT_IS_FORM.has(f));
 }
 
 export function compare(needText: string, product: MatchProduct, aisle?: string, opts: CompareOpts = {}): Verdict {
@@ -660,9 +679,9 @@ export function compare(needText: string, product: MatchProduct, aisle?: string,
     }
   }
 
-  // k2 (e): a named form (diced, whole, crushed, stewed, puree, paste, sauce): a title naming a different form
-  // is a different product. Meat and seafood keep their own cut rules ("whole chicken").
-  if (!FORM_EXEMPT.has(need.category ?? "")) {
+  // k2 (e) / r2: a named form on a canned/jarred line, or when the form is the product (paste, sauce, puree):
+  // a title naming a different form is a different product. Fresh produce skips this. Meat and seafood keep their cut rules.
+  if (formRuleApplies({ name: needText, unit: opts.unit }, need.category)) {
     const nf = productForms(needText);
     const pf = productForms(product.name);
     if (nf.size && pf.size && ![...pf].some((f) => nf.has(f))) differs.push(`${[...pf].join(", ")}, recipe says ${[...nf].join(", ")}`);
@@ -732,14 +751,23 @@ export function canMatchesFlOz(ml: number, oz: number): boolean {
 }
 
 /**
- * k2 (f), Kitchen ruling: a bare "N oz can" ("(19 oz) can chickpeas") is a can size in fluid ounces on a
- * Canadian label: N × 28.4 ml, and a shelf can within 10% of that is that can (19 oz -> 540 ml).
+ * k2 r2 (f): a bare "N oz can" is a Canadian label size. First the standard table (exact ml, ±1 ml);
+ * otherwise accept only 0 to +10% over N × 28.4 ml — never short. 15 oz does not take 398 ml; 28 oz takes 796, not 750.
  */
 export const CAN_OZ_ML = 28.4;
 export const CAN_OZ_TOLERANCE = 0.1;
+export const CAN_OZ_STANDARD_ML: Record<string, number> = {
+  "5.5": 156,
+  "10": 284,
+  "14": 398,
+  "19": 540,
+  "28": 796,
+};
 export function canMatchesOz(ml: number, oz: number): boolean {
+  const standard = CAN_OZ_STANDARD_ML[String(oz)] ?? CAN_OZ_STANDARD_ML[String(Number(oz))];
+  if (standard != null) return Math.abs(ml - standard) <= 1;
   const want = oz * CAN_OZ_ML;
-  return Math.abs(ml - want) <= want * CAN_OZ_TOLERANCE;
+  return ml + 1e-9 >= want && ml <= want * (1 + CAN_OZ_TOLERANCE) + 1e-9;
 }
 const BARE_OZ_RE = /(\d+(?:[.,]\d+)?)\s*-?\s*(?:oz|ounces?)\.?(?![a-z])/i;
 /** Can wording as a container (not "Canada", "candied", "pecan", "scant", "cane"). */
@@ -805,8 +833,8 @@ export function needAmount(
       const isCan = /\b(?:cans?|tins?|canned|tinned)\b/i.test(text);
       if (oz > 0) return isCan ? { ml: Math.ceil(q) * oz * US_FL_OZ_ML, printed: true, canFlOz: oz, cans: Math.ceil(q) } : { ml: Math.ceil(q) * oz * US_FL_OZ_ML, printed: true };
     }
-    // k2 (f): "N oz can" / "(N oz) tin" is also a can size in fluid ounces (Canadian label). The weight
-    // reading stays for products listed in grams; a can listed in ml matches when within 10% of N × 28.4 ml.
+    // k2 r2 (f): "N oz can" / "(N oz) tin" is also a can size in fluid ounces (Canadian label). The weight
+    // reading stays for products listed in grams; a can listed in ml matches the standard table or 0 to +10% over N × 28.4 ml.
     const bareOz = BARE_OZ_RE.exec(text);
     if (bareOz && CAN_CONTAINER.test(text)) {
       const oz = Number(bareOz[1]!.replace(",", "."));
@@ -893,7 +921,7 @@ function coverNeedBase(p: MatchProduct, line: NeedLine, gramsPerCup?: number): C
   if (need.canFlOz && need.cans && p.ml && canMatchesFlOz(p.ml, need.canFlOz)) {
     return { packs: need.cans, totalCad: round2(need.cans * p.priceCad), leftover: 0, leftoverShare: 0, byWeight: false };
   }
-  // k2 (f): "N oz can" and this can is within 10% of N × 28.4 ml: N of them.
+  // k2 r2 (f): "N oz can" and this can is the standard size, or 0 to +10% over N × 28.4 ml: N of them.
   if (need.canOz && need.cans && p.ml && canMatchesOz(p.ml, need.canOz)) {
     return { packs: need.cans, totalCad: round2(need.cans * p.priceCad), leftover: 0, leftoverShare: 0, byWeight: false };
   }
@@ -1024,7 +1052,7 @@ export function pickExact(input: PickInput): PickResult {
       if (shields.some((reason) => !reason.endsWith("no ingredient list to check"))) realShieldHits++;
       continue;
     }
-    const v = compare(line.name, product, line.aisle, { canOk });
+    const v = compare(line.name, product, line.aisle, { canOk, unit: line.unit });
     if (v.blocked.length) continue;
     const cover = coverNeed(product, line, gramsPerCup);
     const notes = [...v.differs, ...v.missing];
@@ -1058,10 +1086,10 @@ export function pickExact(input: PickInput): PickResult {
   if (canNeed.canOz && ranked.some((r) => r.product.ml && canMatchesOz(r.product.ml, canNeed.canOz!))) {
     ranked = ranked.filter((r) => r.product.ml && canMatchesOz(r.product.ml, canNeed.canOz!));
   }
-  // k2 (e): the line names a form ("diced tomatoes"): a title with no form only competes when no
-  // candidate names the matching form. (Titles naming a different form were already refused in compare.)
+  // k2 (e) / r2: on a canned/jarred line, or when the form is the product, a title with no form only
+  // competes when no candidate names the matching form. (Different forms were already refused in compare.)
   const needForms = productForms(line.name);
-  if (needForms.size && !FORM_EXEMPT.has(need.category ?? "")) {
+  if (needForms.size && formRuleApplies(line, need.category)) {
     const matching = ranked.filter((r) => [...productForms(r.product.name)].some((f) => needForms.has(f)));
     if (matching.length) ranked = matching;
   }
@@ -1090,7 +1118,14 @@ export function pickExact(input: PickInput): PickResult {
     const known = amounts.filter((n) => n > 0);
     const spread = known.length === amounts.length && known.length ? Math.max(...known) / Math.min(...known) : 1;
     const labels = new Set(ranked.map((r) => r.product.sizeLabel));
-    if (spread > 1.25 || (known.length !== amounts.length && labels.size > 1)) ambiguity = `The recipe says "${line.unit}" with no size, and this store sells more than one size`;
+    if (spread > 1.25 || (known.length !== amounts.length && labels.size > 1)) {
+      const unit = (line.unit ?? "").trim();
+      const item = (line.name ?? "").trim() || "this item";
+      // k2 r2: a no-unit can line must name the item and ask which size; never `"" with no size`.
+      ambiguity = unit
+        ? `The recipe says "${unit}" with no size, and this store sells more than one size`
+        : `Which size of ${item}? The recipe doesn't give a size, and this store sells more than one`;
+    }
   }
   if (!ambiguity && !generic && ranked.length > 1 && (need.category === "meat" || need.category === "seafood")) {
     const attrs = ranked.map((r) => parseAttrs(r.product.name));

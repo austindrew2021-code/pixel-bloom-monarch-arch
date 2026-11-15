@@ -15,7 +15,7 @@ import {
   type GroceryPick,
   type StoreOption,
 } from "@/lib/grocery-pick";
-import { addToStoreCart, cartFillAnnounced, fillingLabel, nothingAddedText, storeCanHoldCart, storeCartOff, storeCartOpenUrl, storeCartStatus, storeCheckNotice } from "@/lib/grocery-cart";
+import { addToStoreCart, cartFillAnnounced, fillingLabel, nothingAddedText, storeAddFailedText, storeCanHoldCart, storeCartOff, storeCartOpenUrl, storeCartStatus, storeCheckNotice } from "@/lib/grocery-cart";
 import {
   FALLBACK_COORDS,
   fetchNearbyStores,
@@ -365,10 +365,11 @@ function OrderSheet({
   }
 
   /**
-   * Fills what it can. Returns true only when at least one pack was added.
-   * False when a store check stopped it (r3: only the notice shows) or when nothing was added
-   * (k2: "Nothing added yet." plus the reason; never "Cart is filling" / "Cart ready").
-   * `onFirstPick` runs once, when the first exact match is found (the "Filling your cart" ping).
+   * Fills what it can. Returns true only when at least one pack was added to the store cart
+   * (or, with carts off, when the list was packed). False when a store check stopped it
+   * (r3: only the notice shows), when nothing was added (k2: "Nothing added yet."), or when
+   * the store-cart add failed (k2 r2: "Couldn't add that to the store cart"; never "Cart ready").
+   * `onFirstPick` runs once, after the first successful store add (the "Filling your cart" ping).
    */
   async function addAll(onFirstPick?: () => Promise<void> | void): Promise<boolean> {
     if (addingAll) return false;
@@ -396,11 +397,6 @@ function OrderSheet({
           unsure.push(item);
           continue;
         }
-        if (onFirstPick) {
-          const announce = onFirstPick;
-          onFirstPick = undefined;
-          await announce();
-        }
         const cheapest = result.options[0];
         const remembered = mem[item.name.trim().toLowerCase()];
         const rememberedOpt = remembered ? result.options.find((o) => o.name === remembered.pickName) : undefined;
@@ -417,7 +413,6 @@ function OrderSheet({
         .map((item) => nextChosen[pickKey(item)])
         .filter((option): option is StoreOption => Boolean(option))
         .map((option) => ({ id: option.id, packs: option.packs, addUrl: option.addUrl }));
-      const ok = !blocked && packed.length ? await pushStore(packed, merged) : false;
       if (!blocked) packBag(storeCartId, merged);
       if (chosenItems.length) {
         useSpoonful.getState().rememberBag(
@@ -441,14 +436,34 @@ function OrderSheet({
         toast(nothingAddedText({ unsure: unsure.map((item) => item.name) }));
         return false;
       }
-      toast(
-        (ok
-              ? `${packed.length} packs are in the ${picked.name} cart.`
-              : storeCartOff()
-                ? `List packed for ${picked.name}. Store carts aren’t available in Spoonful yet — your list is saved.`
-                : `List packed for ${picked.name}. Pay keeps it on the store screen.`) + askNote,
-      );
-      return true;
+      // Carts off: the list is packed; no store add, so no Filling ping and no Cart ready (fillAndNotify returns early).
+      if (storeCartOff() || !storeCanHoldCart(picked)) {
+        toast(
+          (storeCartOff()
+            ? `List packed for ${picked.name}. Store carts aren’t available in Spoonful yet — your list is saved.`
+            : `List packed for ${picked.name}. Pay keeps it on the store screen.`) + askNote,
+        );
+        return true;
+      }
+      // k2 r2: add one pack at a time so the Filling ping waits for the first successful store add,
+      // and a failed or partial add can say how many packs made it in. Never "Cart ready" on a failure.
+      let added = 0;
+      for (const item of packed) {
+        const ok = await pushStore([item], merged);
+        if (!ok) continue;
+        added++;
+        if (onFirstPick) {
+          const announce = onFirstPick;
+          onFirstPick = undefined;
+          await announce();
+        }
+      }
+      if (added === packed.length) {
+        toast(`${packed.length} packs are in the ${picked.name} cart.` + askNote);
+        return true;
+      }
+      toast(storeAddFailedText({ added, wanted: packed.length }) + askNote);
+      return false;
     } finally {
       setAddingAll(false);
     }
@@ -463,7 +478,7 @@ function OrderSheet({
         await addAll();
         return;
       }
-      // k2: the "Filling your cart" ping waits for the first exact match, so a fill that adds nothing never sends it.
+      // k2 r2: the "Filling your cart" ping waits for the first successful store add, so a failed or empty fill never sends it.
       const filled = await addAll(async () => {
         await enablePush();
         notifyNative("Filling your cart", `Spoonful is packing ${picked.name}. We'll ping you when it's ready to review.`);

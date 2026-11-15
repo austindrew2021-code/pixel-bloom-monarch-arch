@@ -121,6 +121,18 @@ export function nothingAddedText(reason: { alreadyInBag?: boolean; unsure?: stri
   return "Nothing added yet.";
 }
 
+/**
+ * k2 r2: a failed store-cart add. Never "Cart ready". If some packs made it in, say how many of the batch did.
+ */
+export function storeAddFailedText(partial: { added?: number; wanted?: number } = {}): string {
+  const added = partial.added ?? 0;
+  const wanted = partial.wanted ?? 0;
+  if (added > 0 && wanted > added) {
+    return `Couldn't add that to the store cart. ${added} of ${wanted} ${wanted === 1 ? "pack" : "packs"} made it in.`;
+  }
+  return "Couldn't add that to the store cart";
+}
+
 /** r3: store-check wording. 429 is the store being busy, not a person check. */
 export function storeCheckNotice(check: "person" | "busy" | undefined, filling: boolean): string {
   if (check === "busy") return "The store is busy, try again in a minute.";
