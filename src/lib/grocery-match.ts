@@ -702,12 +702,13 @@ function hasFoodWord(item: string): boolean {
 
 // Vague filler items: they never count toward a MADE product's 2-item minimum.
 // Matching is case-, accent- and plural-insensitive (foldScan) and whole-word
-// only, so "spiced" and "flavoured" are not filler. An item that contains a
-// filler word anywhere is filler, including qualifiers before or after it
-// ("Caramel colour", "Couleur caramel") and anything in brackets
-// ("Colour (caramel)", "Natural flavour (vanilla)", "Spices (paprika)").
-// This only changes the two-specific-item count; the allergen check still
-// reads the full raw text of every item. Salt is never a filler word.
+// only, so "spiced" and "flavoured" are not filler. An item is filler if it
+// contains a filler word anywhere (qualifiers and brackets included:
+// "Caramel colour", "Couleur caramel", "Colour (caramel)",
+// "Flavour (natural, artificial)"), OR if every word in it is a modifier or
+// joiner ("natural", "artificial", "other", "Natural, salt."). Both rules
+// apply. This only changes the two-specific-item count; the allergen check
+// still reads the full raw text of every item. Salt is never a filler word.
 const FILLER_WORDS = new Set([
   "spice", "spices", "epice", "epices",
   "seasoning", "seasonings", "assaisonnement", "assaisonnements",
@@ -725,12 +726,50 @@ const FILLER_WORDS = new Set([
   "arome", "aromes",
   "ingredient", "ingredients",
 ]);
+const FILLER_MODIFIERS = new Set([
+  "natural", "naturals",
+  "artificial", "artificials",
+  "naturel", "naturelle", "naturels", "naturelles",
+  "artificiel", "artificielle", "artificiels", "artificielles",
+  "agent", "agents",
+  "fine", "fines",
+  "other",
+  "autre", "autres",
+]);
+const FILLER_JOINERS = new Set(["and", "et", "with", "avec", "ou", "or"]);
+
+/** Split a list on commas and semicolons only at bracket depth 0, so
+ *  "Flavour (natural, artificial)" and "Spices (mustard, sesame)" stay one item. */
+export function splitListItems(raw: string): string[] {
+  const out: string[] = [];
+  let buf = "";
+  let depth = 0;
+  for (const ch of raw) {
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth++;
+      buf += ch;
+    } else if (ch === ")" || ch === "]" || ch === "}") {
+      if (depth > 0) depth--;
+      buf += ch;
+    } else if ((ch === "," || ch === ";") && depth === 0) {
+      const t = buf.trim();
+      if (t) out.push(t);
+      buf = "";
+    } else {
+      buf += ch;
+    }
+  }
+  const t = buf.trim();
+  if (t) out.push(t);
+  return out;
+}
 
 export function isFillerItem(item: string): boolean {
   const t = foldScan(item).replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
   if (!t) return false;
   const toks = t.split(/\s+/).filter(Boolean);
-  return toks.some((w) => FILLER_WORDS.has(w));
+  if (toks.some((w) => FILLER_WORDS.has(w))) return true;
+  return toks.every((w) => FILLER_JOINERS.has(w) || FILLER_MODIFIERS.has(w));
 }
 
 export function isRealIngredientList(raw: string | undefined | null, title?: string): boolean {
@@ -740,7 +779,7 @@ export function isRealIngredientList(raw: string | undefined | null, title?: str
   if (!s) return false;
   const remainder = splitListSegments(s).join(" ").trim();
   if (!remainder) return false;
-  const rawItems = remainder.split(/[,;]/).map((x) => x.trim()).filter(Boolean);
+  const rawItems = splitListItems(remainder);
   // Whole-item placeholders ("Na", "N/A", "none") do not count toward a real list; they never
   // void neighbouring food items by substring ("Sodium (Na) 200 mg" stays inside its item).
   const items = rawItems.filter((item) => !WHOLE_SEGMENT_PLACEHOLDER.test(item.replace(/^[.,;:]+|[.,;:]+$/g, "").trim()));
@@ -749,7 +788,8 @@ export function isRealIngredientList(raw: string | undefined | null, title?: str
   if (made) {
     // A made product needs at least two SPECIFIC (non-filler) items. One-item lists,
     // items that contain a filler word (including "Caramel colour", "Colour (caramel)",
-    // "Natural flavour (vanilla)"), and filler plus salt (one specific item) are all no list.
+    // "Flavour (natural, artificial)"), modifier- or joiner-only items ("natural"),
+    // and filler plus salt (one specific item) are all no list.
     const specific = items.filter((item) => !isFillerItem(item));
     return specific.length >= 2 && specific.some(hasFoodWord);
   }
