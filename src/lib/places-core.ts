@@ -1,4 +1,6 @@
 export type PlaceHit = { name: string; lat: number; lng: number };
+/** k2: what the server fn returns. `busy` = this instance's queue was full, nothing was asked upstream. */
+export type PlaceAnswer = { hits: PlaceHit[]; busy: boolean };
 
 type Deps = {
   fetchImpl: typeof fetch;
@@ -65,12 +67,13 @@ export function makePlaceSearch(deps: Deps) {
     }
   }
 
-  return async function search(raw: string): Promise<PlaceHit[]> {
+  // k2: `lookup` tells a full queue (busy) apart from a real empty answer; cache and throttle are unchanged.
+  async function lookup(raw: string): Promise<PlaceAnswer> {
     const key = normalizePlaceQuery(raw);
     const hit = cache.get(key);
-    if (hit && deps.now() - hit.at < PLACE_TTL_MS) return hit.rows;
+    if (hit && deps.now() - hit.at < PLACE_TTL_MS) return { hits: hit.rows, busy: false };
     // Server-side burst guard (per instance): beyond the cap, answer empty without calling upstream.
-    if (pending >= PLACE_MAX_QUEUED) return [];
+    if (pending >= PLACE_MAX_QUEUED) return { hits: [], busy: true };
     pending++;
     const run = queue.then(() => {
       const again = cache.get(key);
@@ -84,8 +87,28 @@ export function makePlaceSearch(deps: Deps) {
       });
     });
     queue = run.catch(() => undefined);
-    return run.finally(() => {
-      pending--;
-    });
-  };
+    return run
+      .then((hits) => ({ hits, busy: false }))
+      .finally(() => {
+        pending--;
+      });
+  }
+
+  /** Same as before k2: just the hits ([] when empty or busy). */
+  const search = (raw: string): Promise<PlaceHit[]> => lookup(raw).then((answer) => answer.hits);
+  return Object.assign(search, { lookup });
+}
+
+export const PLACE_BUSY_TEXT = "Place search is busy, try again in a moment.";
+export const PLACE_EMPTY_TEXT = "No place matched that. Drag the map, or tap it.";
+
+/** k2: the client's wording for a search answer; nothing to say when there are hits. */
+export function placeAnswerText(answer: PlaceAnswer): string | null {
+  if (answer.busy) return PLACE_BUSY_TEXT;
+  return answer.hits.length ? null : PLACE_EMPTY_TEXT;
+}
+
+export function toastPlaceAnswer(answer: PlaceAnswer, toast: (text: string) => unknown): void {
+  const text = placeAnswerText(answer);
+  if (text) toast(text);
 }

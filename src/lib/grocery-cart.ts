@@ -106,6 +106,21 @@ export function fillingLabel(heliosStore: boolean, cartsOff: boolean): string {
   return heliosStore && cartsOff ? "Saving your list…" : "Filling the cart…";
 }
 
+/**
+ * k2: what Fill says when it added nothing (and no store check stopped it). Never "Cart is filling" or
+ * "Cart ready": it says "Nothing added yet." plus the specific reason when there is one.
+ */
+export function nothingAddedText(reason: { alreadyInBag?: boolean; unsure?: string[]; noPicks?: boolean } = {}): string {
+  if (reason.alreadyInBag) return "Nothing added yet. Everything on this list is already in your bag.";
+  const unsure = reason.unsure ?? [];
+  if (unsure.length) {
+    const names = `${unsure.slice(0, 3).join(", ")}${unsure.length > 3 ? "…" : ""}`;
+    return `Nothing added yet. ${unsure.length} ${unsure.length === 1 ? "item needs" : "items need"} your pick (no exact match): ${names}.`;
+  }
+  if (reason.noPicks) return "Nothing added yet. Pick a match for each item first.";
+  return "Nothing added yet.";
+}
+
 /** r3: store-check wording. 429 is the store being busy, not a person check. */
 export function storeCheckNotice(check: "person" | "busy" | undefined, filling: boolean): string {
   if (check === "busy") return "The store is busy, try again in a minute.";

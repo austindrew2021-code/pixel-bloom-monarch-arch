@@ -646,12 +646,18 @@ test("r4 a bare oz is weight: grams against the product's weight; a volume-only 
   const heavy = pickExact({ line: L("diced tomatoes (28 oz)", 2, "cans"), products: [P("No Name Diced Tomatoes", "796 g", 1.79), P("No Name Diced Tomatoes", "540 g", 1.29)] });
   assert.equal(picked(heavy), "No Name Diced Tomatoes|2");
   assert.equal(heavy.pick!.product.grams, 796);
-  // The product only lists a volume: oz weight isn't converted to ml, so the picker asks.
+  // k2 (f) flips the r4 volume-only case (Kitchen ruling, Nov 15): "N oz can" is also a can size in fl oz on a
+  // Canadian label, so a can listed in ml within 10% of N × 28.4 ml is that can (28 oz -> 796 ml, 19 oz -> 540 ml).
   const volumeOnly = pickExact({ line: L("canned diced tomatoes (28 oz)", 2, "cans"), products: [P("No Name Diced Tomatoes", "398 ml", 1.29), P("No Name Diced Tomatoes", "796 ml", 1.79)] });
-  assert.equal(volumeOnly.status, "ask");
-  assert.equal(volumeOnly.pick, null);
+  assert.equal(volumeOnly.status, "pick");
+  assert.equal(volumeOnly.pick!.product.ml, 796);
+  assert.equal(volumeOnly.pick!.cover.packs, 2);
   const k6 = pickExact({ line: L("canned diced tomatoes 19 oz", 2, "can"), products: [P("No Name Diced Tomatoes", "540 ml", 1.59)] });
-  assert.equal(k6.status, "ask");
+  assert.equal(k6.status, "pick");
+  assert.equal(k6.pick!.cover.packs, 2);
+  // A can listed in ml far from the oz size still can't be confirmed: ask.
+  const off = pickExact({ line: L("canned diced tomatoes (28 oz)", 1, "can"), products: [P("No Name Diced Tomatoes", "398 ml", 1.29)] });
+  assert.equal(off.status, "ask");
 });
 
 test("r5 can range edges follow the ruling: X × 28.41 … X × 29.57 ml, whole-ml labels", () => {

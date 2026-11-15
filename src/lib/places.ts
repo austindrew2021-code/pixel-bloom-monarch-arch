@@ -1,8 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { makePlaceSearch, type PlaceHit } from "./places-core";
+import { makePlaceSearch, type PlaceAnswer, type PlaceHit } from "./places-core";
 
-export type { PlaceHit };
+export type { PlaceAnswer, PlaceHit };
 
 // One shared, throttled, cached client on the server. NOMINATIM_URL lets us switch
 // providers without an app update (OpenStreetMap policy asks for that).
@@ -19,4 +19,5 @@ const placeSearch = makePlaceSearch({
  */
 export const searchPlaces = createServerFn({ method: "POST" })
   .validator((input: unknown) => z.object({ q: z.string().trim().min(2).max(80) }).parse(input))
-  .handler(async ({ data }): Promise<PlaceHit[]> => placeSearch(data.q));
+  // k2: { hits, busy } so a full queue reads as "busy", not as "no place matched".
+  .handler(async ({ data }): Promise<PlaceAnswer> => placeSearch.lookup(data.q));

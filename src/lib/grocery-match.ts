@@ -62,7 +62,15 @@ export type MatchProduct = StapleProduct & {
   breadcrumbs?: string[];
 };
 
-export type Cover = { packs: number; totalCad: number; leftover: number; leftoverShare: number; byWeight: boolean };
+export type Cover = {
+  packs: number;
+  totalCad: number;
+  leftover: number;
+  leftoverShare: number;
+  byWeight: boolean;
+  /** k2: set only when a multi-buy priced this cover ("5 for $3.99", or "5 for $3.99 + 1 × $1.69"). */
+  deal?: string;
+};
 
 export type Verdict = {
   ok: boolean;
@@ -523,6 +531,22 @@ export function lineSaysCanned(line: { name: string; unit?: string }): boolean {
 
 export type CompareOpts = { canOk?: boolean };
 
+/** k2 (e): packaged-product forms. "purée"/"pureed" are puree. */
+const PRODUCT_FORMS: [string, RegExp][] = [
+  ["diced", /\bdiced\b/],
+  ["whole", /\bwhole\b/],
+  ["crushed", /\bcrushed\b/],
+  ["stewed", /\bstewed\b/],
+  ["puree", /\b(?:puree|pureed)\b/],
+  ["paste", /\bpaste\b/],
+  ["sauce", /\bsauce\b/],
+];
+const FORM_EXEMPT = new Set(["meat", "seafood"]);
+export function productForms(text: string): Set<string> {
+  const t = norm(text);
+  return new Set(PRODUCT_FORMS.filter(([, re]) => re.test(t)).map(([id]) => id));
+}
+
 export function compare(needText: string, product: MatchProduct, aisle?: string, opts: CompareOpts = {}): Verdict {
   const need = parseAttrs(needText);
   const prod = parseAttrs(product.name);
@@ -636,6 +660,14 @@ export function compare(needText: string, product: MatchProduct, aisle?: string,
     }
   }
 
+  // k2 (e): a named form (diced, whole, crushed, stewed, puree, paste, sauce): a title naming a different form
+  // is a different product. Meat and seafood keep their own cut rules ("whole chicken").
+  if (!FORM_EXEMPT.has(need.category ?? "")) {
+    const nf = productForms(needText);
+    const pf = productForms(product.name);
+    if (nf.size && pf.size && ![...pf].some((f) => nf.has(f))) differs.push(`${[...pf].join(", ")}, recipe says ${[...nf].join(", ")}`);
+  }
+
   if (need.sizeGrade && prod.sizeGrade && need.sizeGrade !== prod.sizeGrade) differs.push(`${prod.sizeGrade}, recipe says ${need.sizeGrade}`);
 
   // Same food at all? Token/head/other-food check on the attribute-free text.
@@ -699,6 +731,20 @@ export function canMatchesFlOz(ml: number, oz: number): boolean {
   return ml >= Math.floor(oz * CAN_FL_OZ_MIN_ML) && ml <= Math.ceil(oz * CAN_FL_OZ_MAX_ML);
 }
 
+/**
+ * k2 (f), Kitchen ruling: a bare "N oz can" ("(19 oz) can chickpeas") is a can size in fluid ounces on a
+ * Canadian label: N × 28.4 ml, and a shelf can within 10% of that is that can (19 oz -> 540 ml).
+ */
+export const CAN_OZ_ML = 28.4;
+export const CAN_OZ_TOLERANCE = 0.1;
+export function canMatchesOz(ml: number, oz: number): boolean {
+  const want = oz * CAN_OZ_ML;
+  return Math.abs(ml - want) <= want * CAN_OZ_TOLERANCE;
+}
+const BARE_OZ_RE = /(\d+(?:[.,]\d+)?)\s*-?\s*(?:oz|ounces?)\.?(?![a-z])/i;
+/** Can wording as a container (not "Canada", "candied", "pecan", "scant", "cane"). */
+const CAN_CONTAINER = /\b(?:cans?|tins?|canned|tinned)\b/i;
+
 /** "28 fl oz", "28 fl. oz.", "28 US fl oz", "28 fluid ounces", "28 imperial fl oz". */
 const FL_OZ_RE = /(\d+(?:[.,]\d+)?)\s*(?:u\.?s\.?\s*|imperial\s*|imp\.?\s*)?(?:fl\.?\s*oz\.?|fluid\s*ounces?|fl\.?\s*ounces?)(?![a-z])/i;
 
@@ -727,7 +773,7 @@ export function printedSize(text: string): { ml?: number; g?: number } | null {
 export function needAmount(
   line: NeedLine,
   gramsPerCup?: number,
-): { g?: number; ml?: number; each?: number; packages?: number; printed?: boolean; canFlOz?: number; cans?: number } {
+): { g?: number; ml?: number; each?: number; packages?: number; printed?: boolean; canFlOz?: number; canOz?: number; cans?: number } {
   const u = (line.unit || "").trim().toLowerCase().replace(/\.$/, "");
   const q = Math.abs(Number(line.qty)) || 0;
   if (!q) return {};
@@ -759,10 +805,23 @@ export function needAmount(
       const isCan = /\b(?:cans?|tins?|canned|tinned)\b/i.test(text);
       if (oz > 0) return isCan ? { ml: Math.ceil(q) * oz * US_FL_OZ_ML, printed: true, canFlOz: oz, cans: Math.ceil(q) } : { ml: Math.ceil(q) * oz * US_FL_OZ_ML, printed: true };
     }
+    // k2 (f): "N oz can" / "(N oz) tin" is also a can size in fluid ounces (Canadian label). The weight
+    // reading stays for products listed in grams; a can listed in ml matches when within 10% of N × 28.4 ml.
+    const bareOz = BARE_OZ_RE.exec(text);
+    if (bareOz && CAN_CONTAINER.test(text)) {
+      const oz = Number(bareOz[1]!.replace(",", "."));
+      if (oz > 0) return { g: Math.ceil(q) * oz * OZ_G, printed: true, canOz: oz, cans: Math.ceil(q) };
+    }
     if (printed?.ml) return { ml: Math.ceil(q) * printed.ml, printed: true };
     if (printed?.g) return { g: Math.ceil(q) * printed.g, printed: true };
   }
   if (PACKAGE_UNITS.has(u)) return { packages: Math.ceil(q) };
+  // k2: no unit, but the line itself says can/tin ("tinned tomatoes", "1 can of coconut milk"): count cans.
+  // A leading "N can(s)" in the name is that many per quantity.
+  if (u === "" && CAN_CONTAINER.test(line.name)) {
+    const lead = /^\s*(\d+)\s+(?:cans?|tins?)\b/i.exec(line.name);
+    return { packages: Math.ceil(q) * (lead ? Number(lead[1]) : 1) };
+  }
   if (EACH_UNITS.has(u)) {
     const name = `${line.name} ${u}`.toLowerCase();
     const each = EACH_GRAMS.find((row) => row.re.test(name));
@@ -789,10 +848,18 @@ function trayGrams(p: MatchProduct): number | undefined {
 }
 
 /**
- * Multi-buy on one loose item ("5 for $3.99", from the Grok workspace's shelf pricing):
- * when the line is counted (not weighed or measured), buying the deal group can cost less.
- * Only lowers a confirmed cover's price; never makes an unconfirmed match coverable.
+ * Multi-buy on one loose item ("5 for $3.99", from the Grok workspace's shelf pricing).
+ * k2 (Kitchen ruling, Nov 15): the deal applies only when the line's needed count is >= N. Below N the
+ * regular unit price is used for ranking and display, and we never buy extra to reach a deal.
+ * At or above N, each full group of N is bought at the deal and any remainder at the regular price
+ * (need 6 with "5 for $3.99" at $1.69 = 3.99 + 1.69 = $5.68 for 6 packs). The cover says which deal was
+ * used (`deal: "5 for $3.99"`) so the price is shown as the deal, never as a bare single price.
+ * Only lowers a confirmed cover's price; never makes an unconfirmed match coverable, never changes packs.
  */
+export function multiBuyLabel(dealCount: number, dealCad: number): string {
+  return `${dealCount} for $${dealCad.toFixed(2)}`;
+}
+
 function withMultiBuy(p: MatchProduct, need: ReturnType<typeof needAmount>, cover: Cover | null): Cover | null {
   if (!cover || cover.byWeight || p.grams || p.ml || !(need.each || need.packages)) return cover;
   const size = Math.max(1, p.each || 1);
@@ -800,25 +867,13 @@ function withMultiBuy(p: MatchProduct, need: ReturnType<typeof needAmount>, cove
   const dealCad = p.dealCad;
   if (size !== 1 || !dealCount || !dealCad || dealCount < 2 || dealCad >= p.priceCad * dealCount - 0.009) return cover;
   const packs = cover.packs;
-  let bestPacks = packs;
-  let bestTotal = cover.totalCad;
-  const groups = Math.ceil(packs / dealCount);
-  if (groups * dealCad < bestTotal - 0.009) {
-    bestTotal = groups * dealCad;
-    bestPacks = groups * dealCount;
-  }
+  if (packs < dealCount) return cover;
   const full = Math.floor(packs / dealCount);
   const rem = packs - full * dealCount;
-  if (full > 0 && rem > 0) {
-    const mixed = full * dealCad + rem * p.priceCad;
-    if (mixed < bestTotal - 0.009) {
-      bestTotal = mixed;
-      bestPacks = full * dealCount + rem;
-    }
-  }
-  if (bestPacks === packs && bestTotal === cover.totalCad) return cover;
-  const extra = bestPacks - packs;
-  return { ...cover, packs: bestPacks, totalCad: round2(bestTotal), leftover: cover.leftover + extra };
+  const total = full * dealCad + rem * p.priceCad;
+  if (total >= cover.totalCad - 0.009) return cover;
+  const label = multiBuyLabel(dealCount, dealCad);
+  return { ...cover, totalCad: round2(total), deal: rem > 0 ? `${label} + ${rem} × $${p.priceCad.toFixed(2)}` : label };
 }
 
 export function coverNeed(p: MatchProduct, line: NeedLine, gramsPerCup?: number): Cover | null {
@@ -836,6 +891,10 @@ function coverNeedBase(p: MatchProduct, line: NeedLine, gramsPerCup?: number): C
   if (need.printed && need.ml && !p.ml) return null;
   // "N cans (X fl oz)" and this can's metric size is X fl oz (Imperial–US): N of them.
   if (need.canFlOz && need.cans && p.ml && canMatchesFlOz(p.ml, need.canFlOz)) {
+    return { packs: need.cans, totalCad: round2(need.cans * p.priceCad), leftover: 0, leftoverShare: 0, byWeight: false };
+  }
+  // k2 (f): "N oz can" and this can is within 10% of N × 28.4 ml: N of them.
+  if (need.canOz && need.cans && p.ml && canMatchesOz(p.ml, need.canOz)) {
     return { packs: need.cans, totalCad: round2(need.cans * p.priceCad), leftover: 0, leftoverShare: 0, byWeight: false };
   }
   if (need.printed && need.g && !trayGrams(p)) return null;
@@ -904,7 +963,9 @@ function sizeText(r: Ranked): string {
 export function pickReason(r: Ranked, line: NeedLine, rivals: number, next?: Ranked): string {
   const parts = [`${r.cover.packs}× ${sizeText(r)}`];
   const u = unitLabel(r.unit);
-  if (u) parts.push(u);
+  // k2: a multi-buy is shown as the deal itself, not as a single-item price.
+  if (r.cover.deal) parts.push(r.cover.deal);
+  else if (u) parts.push(u);
   parts.push(`$${r.cover.totalCad.toFixed(2)} total`);
   let why = `Cheapest exact match: ${parts.join(" · ")} covers ${describeNeed(line)}`;
   why += rivals > 1 ? `; lowest total of ${rivals} exact matches` : "; only exact match found";
@@ -993,6 +1054,16 @@ export function pickExact(input: PickInput): PickResult {
   const canNeed = needAmount(line, gramsPerCup);
   if (canNeed.canFlOz && ranked.some((r) => r.product.ml && canMatchesFlOz(r.product.ml, canNeed.canFlOz!))) {
     ranked = ranked.filter((r) => r.product.ml && canMatchesFlOz(r.product.ml, canNeed.canFlOz!));
+  }
+  if (canNeed.canOz && ranked.some((r) => r.product.ml && canMatchesOz(r.product.ml, canNeed.canOz!))) {
+    ranked = ranked.filter((r) => r.product.ml && canMatchesOz(r.product.ml, canNeed.canOz!));
+  }
+  // k2 (e): the line names a form ("diced tomatoes"): a title with no form only competes when no
+  // candidate names the matching form. (Titles naming a different form were already refused in compare.)
+  const needForms = productForms(line.name);
+  if (needForms.size && !FORM_EXEMPT.has(need.category ?? "")) {
+    const matching = ranked.filter((r) => [...productForms(r.product.name)].some((f) => needForms.has(f)));
+    if (matching.length) ranked = matching;
   }
 
   // Ground meat with no grade: regular / medium / unlabelled first. Lean only when that's all there is,

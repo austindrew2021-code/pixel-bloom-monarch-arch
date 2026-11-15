@@ -10,10 +10,11 @@ const src = (rel: string) => readFile(new URL(rel, import.meta.url), "utf8");
 // --- 2: a store check stops Fill with no "Cart ready" / "Cart is filling" -----------------------------
 test("r3-2: fillAndNotify stops after a blocked addAll (no Cart ready ping, no Cart is filling toast)", async () => {
   const s = await src("../components/grocery-near.tsx");
-  assert.match(s, /async function addAll\(\): Promise<boolean>/);
+  // k2: addAll takes the deferred "Filling your cart" ping (onFirstPick); still Promise<boolean>.
+  assert.match(s, /async function addAll\(onFirstPick\?: \(\) => Promise<void> \| void\): Promise<boolean>/);
   assert.match(s, /if \(blocked\) return false;/);
   const fill = s.slice(s.indexOf("async function fillAndNotify"));
-  const filledAt = fill.indexOf("const filled = await addAll();");
+  const filledAt = fill.indexOf("const filled = await addAll(");
   assert.ok(filledAt > 0);
   assert.ok(fill.indexOf("if (!filled || storeCartOff()) return;") > filledAt);
   assert.ok(fill.indexOf('notifyNative("Cart ready to review"') > fill.indexOf("if (!filled"));

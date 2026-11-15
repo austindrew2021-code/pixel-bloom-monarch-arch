@@ -15,7 +15,7 @@ import {
   type GroceryPick,
   type StoreOption,
 } from "@/lib/grocery-pick";
-import { addToStoreCart, cartFillAnnounced, fillingLabel, storeCanHoldCart, storeCartOff, storeCartOpenUrl, storeCartStatus, storeCheckNotice } from "@/lib/grocery-cart";
+import { addToStoreCart, cartFillAnnounced, fillingLabel, nothingAddedText, storeCanHoldCart, storeCartOff, storeCartOpenUrl, storeCartStatus, storeCheckNotice } from "@/lib/grocery-cart";
 import {
   FALLBACK_COORDS,
   fetchNearbyStores,
@@ -364,9 +364,18 @@ function OrderSheet({
     return result.ok;
   }
 
-  /** Fills what it can. Returns false when a store check stopped it (nothing is added then). */
-  async function addAll(): Promise<boolean> {
-    if (leftover.length === 0 || addingAll) return true;
+  /**
+   * Fills what it can. Returns true only when at least one pack was added.
+   * False when a store check stopped it (r3: only the notice shows) or when nothing was added
+   * (k2: "Nothing added yet." plus the reason; never "Cart is filling" / "Cart ready").
+   * `onFirstPick` runs once, when the first exact match is found (the "Filling your cart" ping).
+   */
+  async function addAll(onFirstPick?: () => Promise<void> | void): Promise<boolean> {
+    if (addingAll) return false;
+    if (leftover.length === 0) {
+      toast(nothingAddedText({ alreadyInBag: true }));
+      return false;
+    }
     setAddingAll(true);
     setStoreAsk("");
     try {
@@ -386,6 +395,11 @@ function OrderSheet({
         if (result.status !== "pick" || result.options.length === 0) {
           unsure.push(item);
           continue;
+        }
+        if (onFirstPick) {
+          const announce = onFirstPick;
+          onFirstPick = undefined;
+          await announce();
         }
         const cheapest = result.options[0];
         const remembered = mem[item.name.trim().toLowerCase()];
@@ -422,6 +436,11 @@ function OrderSheet({
       setCartsOff(storeCartOff());
       // r3: a store check shows only the notice above the button; no fill or cart toast.
       if (blocked) return false;
+      // k2: 0 adds outside a store check: say so, with the reason; no cart wording.
+      if (chosenItems.length === 0) {
+        toast(nothingAddedText({ unsure: unsure.map((item) => item.name) }));
+        return false;
+      }
       toast(
         (ok
               ? `${packed.length} packs are in the ${picked.name} cart.`
@@ -444,16 +463,24 @@ function OrderSheet({
         await addAll();
         return;
       }
-      await enablePush();
-      notifyNative("Filling your cart", `Spoonful is packing ${picked.name}. We'll ping you when it's ready to review.`);
-      pushNote("Filling your cart", `Packing ${picked.name}. We'll ping you when it's ready.`);
-      const filled = await addAll();
+      // k2: the "Filling your cart" ping waits for the first exact match, so a fill that adds nothing never sends it.
+      const filled = await addAll(async () => {
+        await enablePush();
+        notifyNative("Filling your cart", `Spoonful is packing ${picked.name}. We'll ping you when it's ready to review.`);
+        pushNote("Filling your cart", `Packing ${picked.name}. We'll ping you when it's ready.`);
+      });
       // r3: stopped by a store check (0 adds): no "Cart ready" ping and no "Cart is filling" toast.
+      // k2: the same for any fill that added nothing (addAll already said "Nothing added yet." and why).
       if (!filled || storeCartOff()) return;
       const n = cart.items.length;
       notifyNative("Cart ready to review", `${n} packs are in the ${picked.name} bag. Open Shop when you want to check out.`);
       pushNote("Cart ready to review", `${n} packs at ${picked.name}.`);
       toast("Cart is filling. You can put the phone down — we'll ping you.");
+      return;
+    }
+    // k2: nothing picked means nothing to fill; no "Filling" ping or toast.
+    if (Object.keys(chosen).length === 0) {
+      toast(nothingAddedText({ noPicks: true }));
       return;
     }
     await enablePush();
@@ -638,7 +665,7 @@ function OrderSheet({
                           <p className="text-xs text-muted-foreground">
                             Need {formatQty(item.qty, item.unit)}
                             {pick
-                              ? ` · buy ${pick.packs}× ${pick.sizeLabel} · $${pick.totalCad.toFixed(2)}`
+                              ? ` · buy ${pick.packs}× ${pick.sizeLabel}${pick.dealLabel ? ` · ${pick.dealLabel}` : ""} · $${pick.totalCad.toFixed(2)}`
                               : item.matched
                                 ? ` · buy ${item.packs}× ${item.pickSize} · $${item.pickCad.toFixed(2)}`
                                 : ""}
@@ -772,8 +799,9 @@ function OptionsPane({
                 ) : null}
                 <p className="truncate font-medium">{option.name}</p>
                 <p className="text-xs text-muted-foreground">
-                  {option.packs}× {option.sizeLabel} · ${option.totalCad.toFixed(2)}
-                  {option.unitPrice ? ` · ${option.unitPrice}` : option.unitHint ? ` · ${option.unitHint}` : ""}
+                  {option.packs}× {option.sizeLabel}
+                  {option.dealLabel ? ` · ${option.dealLabel}` : ""} · ${option.totalCad.toFixed(2)}
+                  {option.unitPrice ? ` · ${option.unitPrice}` : option.unitHint && !option.dealLabel ? ` · ${option.unitHint}` : ""}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {option.inStock ? "In stock" : "May be low"} · {option.why}
@@ -801,7 +829,8 @@ function OptionsPane({
               </p>
               <p className="truncate font-medium">{choice.name}</p>
               <p className="text-xs text-muted-foreground">
-                {choice.packs}× {choice.sizeLabel} · ${choice.totalCad.toFixed(2)}
+                {choice.packs}× {choice.sizeLabel}
+                {choice.dealLabel ? ` · ${choice.dealLabel}` : ""} · ${choice.totalCad.toFixed(2)}
                 {choice.unitPrice ? ` · ${choice.unitPrice}` : ""}
               </p>
               <Button
