@@ -395,13 +395,101 @@ function precautionHit(id: string, ingredients: string): boolean {
   });
 }
 
+/**
+ * A made product (paste, sauce, puree, …) is never a single-ingredient whole food,
+ * regardless of a meat / seafood / produce category. Checked on the raw title, the
+ * split/normalized title, and a squashed form. "mixed greens" is not a "mix".
+ */
+const MADE_PRODUCT_WORD = /\b(?:pastes?|sauces?|purees?|pureed|spreads?|dips?|mixes?|seasonings?|stocks?|broths?|soups?|dressings?|marinades?|pestos?|relishes?|salsas?|chutneys?|ketchups?)\b/i;
+const MADE_PRODUCT_SQUASH = /(?:paste|sauce|puree|pureed|spread|dip|mix|seasoning|stock|broth|soup|dressing|marinade|pesto|relish|salsa|chutney|ketchup)s?$/i;
+
+export function squashedText(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+export function isMadeProductTitle(title: string): boolean {
+  const stripped = title.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  if (MADE_PRODUCT_WORD.test(stripped)) return true;
+  if (MADE_PRODUCT_WORD.test(norm(title))) return true;
+  return MADE_PRODUCT_SQUASH.test(squashedText(stripped));
+}
+
 /** Single-ingredient raw foods whose title alone is enough to judge a shield. */
-function wholeFood(a: Attrs): boolean {
+function wholeFood(a: Attrs, title: string): boolean {
+  // k2 r4: a made-product word is never a whole food, even on meat / seafood / produce.
+  if (isMadeProductTitle(title)) return false;
   if (a.prepared.length) return false;
   if (a.category === "meat" || a.category === "seafood") return !a.ground || a.species.length === 1;
   if (a.category === "produce") return a.form !== "canned" && a.form !== "dried";
   if (a.category === "eggs") return true;
   return false;
+}
+
+/**
+ * Squashed-title keywords for allergen / meat / fish / shellfish hits when words are joined
+ * ("shrimppaste"). Short lookalike-prone stems (bare "nut", "egg" in eggplant) are denied below.
+ */
+const SQUASH_SHIELD_KEYS: Record<string, string[]> = {
+  shellfish: ["shrimp","shrimps","prawn","prawns","crab","crabs","lobster","lobsters","clam","clams","clamato","mussel","mussels","scallop","scallops","oyster","oysters","crawfish","crayfish","krill","langoustine","langoustines","shellfish","crustacean","crustaceans","mollusc","molluscs","mollusk","mollusks"],
+  fish: ["fish","salmon","haddock","halibut","tuna","tilapia","trout","pollock","mackerel","sardine","sardines","anchov","hake","herring","caviar","worcestershire","bonito","dashi","cod","basa"],
+  nuts: ["peanut","peanuts","almond","almonds","walnut","walnuts","pecan","pecans","cashew","cashews","pistachio","pistachios","hazelnut","hazelnuts","filbert","filberts","macadamia","pinenut","pinenuts","pine nuts","brazilnut","brazilnuts","praline","pralines","marzipan","nougat","gianduja","treenut","treenuts"],
+  dairy: ["milk","butter","cheese","cheeses","cheddar","mozzarella","parmesan","yogurt","yoghurt","whey","casein","caseinate","lactose","ghee","kefir","sourcream","curd","curds","dairy"],
+  gluten: ["wheat","flour","barley","rye","malt","oat","oats","spelt","semolina","durum","bread","crumb","crumbs","panko","pasta","noodle","noodles","couscous","seitan","soysauce","teriyaki","batter","battered","breaded","graham","cracker","crackers","biscuit","biscuits","bran","triticale","kamut","farro","bulgur","brewer","beer","gluten"],
+  egg: ["egg","eggs","eggyolk","eggyolks","eggwhite","eggwhites","eggnog","yolk","yolks","albumin","albumen","mayonnaise","mayo","meringue","lysozyme"],
+  soy: ["soy","soya","soybean","soybeans","tofu","edamame","miso","tempeh","tamari","shoyu","teriyaki"],
+  sesame: ["sesame","tahini","halva","halvah","gomasio","benne","zaatar"],
+  spicy: ["chili","chilli","chile","cayenne","jalapeno","hotsauce","harissa","sriracha","gochujang","chipotle","habanero","scotchbonnet","spicy","buffalo","cajun","jerk","curry","szechuan"],
+};
+const SQUASH_MEAT_KEYS = ["chicken","beef","pork","lamb","turkey","veal","duck","goat","bison","venison","rabbit","ham","hams","bacon","prosciutto","pancetta","sausage","sausages","pepperoni","salami","gelatin","gelatine","lard","tallow","suet","meat","meats","bonebroth","meatbroth","chickenbroth","beefbroth","porkbroth","beefstock","chickenstock","rennet","carmine"];
+
+function squashHasKey(squashed: string, key: string): boolean {
+  return squashed.includes(key.replace(/\s+/g, ""));
+}
+
+function squashDenied(id: string, squashed: string, key: string): boolean {
+  const without = (re: RegExp) => squashed.replace(re, "");
+  if (id === "egg" && key.startsWith("egg") && /eggplant/.test(squashed) && !without(/eggplant/g).includes(key)) return true;
+  if (id === "gluten" && key === "wheat" && /buckwheat/.test(squashed) && !without(/buckwheat/g).includes("wheat")) return true;
+  if (id === "gluten" && (key === "oat" || key === "oats")) {
+    const cleaned = squashed.replace(/[gcb]oat(?:s|cheese|milk|meat|milk)?/g, " ").replace(/[fb]loats?/g, " ").replace(/throats?/g, " ").replace(/moats?/g, " ").replace(/groats/g, " ");
+    return !cleaned.includes(key);
+  }
+  if (id === "gluten" && key === "bread" && /breadfruit/.test(squashed) && !without(/breadfruit/g).includes("bread")) return true;
+  if (id === "gluten" && key === "malt" && /malt(?:odextrin|ose|itol)/.test(squashed) && !without(/malt(?:odextrin|ose|itol)/g).includes("malt")) return true;
+  if (id === "shellfish" && key.startsWith("crab") && /crabapple/.test(squashed) && !without(/crabapples?/g).includes(key === "crabs" ? "crabs" : "crab")) return true;
+  if (id === "shellfish" && key.startsWith("oyster") && /oystermushroom/.test(squashed) && !without(/oystermushrooms?/g).includes(key === "oysters" ? "oysters" : "oyster")) return true;
+  if (id === "shellfish" && key.startsWith("scallop") && /scalloped/.test(squashed) && !without(/scalloped/g).includes(key)) return true;
+  if (id === "shellfish" && key.startsWith("clam") && /clamshell/.test(squashed) && !without(/clamshells?/g).includes(key === "clams" ? "clams" : "clam")) return true;
+  if (id === "fish" && key === "hake" && squashed.includes("shake") && !without(/shake/g).includes("hake")) return true;
+  if (id === "fish" && key === "basa" && /basmati/.test(squashed) && !without(/basmati/g).includes("basa")) return true;
+  if (id === "spicy" && (key === "chile" || key === "chili" || key === "chilli") && /chilean/.test(squashed) && !without(/chilean/g).includes(key)) return true;
+  if (id === "dairy") {
+    const plant = squashed.replace(/(?:coconut|almond|oat|soy|soya|rice|cashew|hemp|pea|macadamia|hazelnut|plant|vegan|nondairy|peanut|nut|seed|sunflower|pumpkin|cocoa|cacao|shea|apple|sesame)s?(?:milk|beverage|butter|cream|creamer|cheese|yogurt|yoghurt|spread)/g, "").replace(/butter(?:beans?|lettuce|nutsquash)|butternut|creamoftartar|creamstylecorn|creamedcorn|milkthistle/g, "");
+    return !plant.includes(key);
+  }
+  return false;
+}
+
+function squashHitsShield(id: string, squashed: string): boolean {
+  return (SQUASH_SHIELD_KEYS[id] ?? []).some((key) => squashHasKey(squashed, key) && !squashDenied(id, squashed, key));
+}
+
+function squashHitsMeat(squashed: string): boolean {
+  return SQUASH_MEAT_KEYS.some((key) => {
+    if (!squashHasKey(squashed, key)) return false;
+    if (key === "ham" || key === "hams") {
+      return !["graham", "chamomile", "abraham", "birmingham", "champion"].some((deny) => squashed.includes(deny)) || squashed.replace(/graham|chamomile|abraham|birmingham|champion/g, "").includes(key);
+    }
+    return true;
+  });
+}
+
+function squashHitsSeafood(squashed: string): boolean {
+  return squashHitsShield("shellfish", squashed) || squashHitsShield("fish", squashed);
 }
 
 export function shieldBlocks(
@@ -436,7 +524,10 @@ export function shieldBlocks(
     return false;
   };
   const out: string[] = [];
-  const doubt = !opts.ignoreDoubt && !wholeFood(attrs) && !ingredients;
+  // k2 r4: a made product with no label is never a whole food; doubt fails every asked tag.
+  const doubt = !opts.ignoreDoubt && !wholeFood(attrs, title) && !ingredients;
+  const splitTitle = norm(title);
+  const squashed = squashedText(title);
   for (const id of allergies) {
     const re = SHIELD_RE[id];
     if (!re) {
@@ -450,8 +541,8 @@ export function shieldBlocks(
       out.push(`${id} shield: may contain (ingredients list)`);
       continue;
     }
-    // A "gluten-free"/"dairy-free" title clears the title only, never a matching ingredient.
-    const titleHit = re.test(prep(title));
+    // k2 r4: test the raw title, the split/normalized title, and a squashed form. Any hit wins; splitting only adds refusals.
+    const titleHit = re.test(prep(title)) || re.test(prep(splitTitle)) || squashHitsShield(id, squashed);
     if (titleHit && !stateFree(id)) {
       out.push(`${id} shield: "${title}"`);
       continue;
@@ -463,16 +554,19 @@ export function shieldBlocks(
     if (doubt && !stateFree(id)) out.push(`${id} shield: no ingredient list to check`);
   }
   const veg = (x: string) => plain(x).replace(MEAT_LOOKALIKE, " ");
-  const vegText = `${veg(title)} ${veg(ingredients)}`;
+  // Raw + split + ingredients; squashed species/meat words can only add a refusal.
+  const vegText = `${veg(title)} ${veg(splitTitle)} ${veg(ingredients)}`;
+  const squashMeat = squashHitsMeat(squashed);
+  const squashSea = squashHitsSeafood(squashed);
   if (prefs.has("vegetarian") || prefs.has("vegan")) {
     const who = prefs.has("vegan") ? "vegan" : "vegetarian";
     const plantTitle = attrs.prepared.includes("plant");
-    if ((!plantTitle && (attrs.category === "meat" || attrs.category === "seafood")) || MEAT_RE.test(vegText) || SEAFOOD_RE.test(vegText)) {
+    if ((!plantTitle && (attrs.category === "meat" || attrs.category === "seafood")) || MEAT_RE.test(vegText) || SEAFOOD_RE.test(vegText) || squashMeat || squashSea) {
       out.push(`${who}: contains meat or fish`);
     } else if (doubt) out.push(`${who}: no ingredient list to check`);
   } else if (prefs.has("pescatarian")) {
     const plantTitle = attrs.prepared.includes("plant");
-    if ((!plantTitle && attrs.category === "meat") || MEAT_RE.test(vegText)) out.push("pescatarian: contains meat");
+    if ((!plantTitle && attrs.category === "meat") || MEAT_RE.test(vegText) || squashMeat) out.push("pescatarian: contains meat");
     else if (doubt) out.push("pescatarian: no ingredient list to check");
   }
   if (prefs.has("vegan") && VEGAN_ANIMAL.test(`${title} ${ingredients}`)) out.push("vegan: animal product");
