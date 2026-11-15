@@ -483,7 +483,7 @@ export function RouteMap({
             ))}
           </ul>
         ) : null}
-        <p className="text-[10px] text-foreground/80">© OpenStreetMap</p>
+        <p className="text-[10px] text-foreground/80">© OpenStreetMap contributors</p>
       </div>
     </div>
   );

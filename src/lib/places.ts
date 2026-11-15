@@ -1,32 +1,22 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { makePlaceSearch, type PlaceHit } from "./places-core";
 
-export type PlaceHit = { name: string; lat: number; lng: number };
+export type { PlaceHit };
+
+// One shared, throttled, cached client on the server. NOMINATIM_URL lets us switch
+// providers without an app update (OpenStreetMap policy asks for that).
+const placeSearch = makePlaceSearch({
+  fetchImpl: (...args) => fetch(...args),
+  now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  baseUrl: process.env.NOMINATIM_URL || "https://nominatim.openstreetmap.org/search",
+});
 
 /**
  * Place search for a run or ride. OpenStreetMap, one request when the person
- * asks, not a live watch on the map. No account required.
+ * submits (never per keystroke), at most one a second app-wide, cached.
  */
 export const searchPlaces = createServerFn({ method: "POST" })
   .validator((input: unknown) => z.object({ q: z.string().trim().min(2).max(80) }).parse(input))
-  .handler(async ({ data }): Promise<PlaceHit[]> => {
-    const url = new URL("https://nominatim.openstreetmap.org/search");
-    url.searchParams.set("q", data.q);
-    url.searchParams.set("format", "jsonv2");
-    url.searchParams.set("limit", "5");
-    const res = await fetch(url, {
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "SpoonfulKitchen/1.0 (training map; personal meal planner)",
-      },
-    });
-    if (!res.ok) return [];
-    const rows = (await res.json()) as { display_name?: string; lat?: string; lon?: string }[];
-    return rows
-      .map((row) => ({
-        name: String(row.display_name ?? "").split(",").slice(0, 2).join(",").trim(),
-        lat: Number(row.lat),
-        lng: Number(row.lon),
-      }))
-      .filter((row) => row.name && Number.isFinite(row.lat) && Number.isFinite(row.lng));
-  });
+  .handler(async ({ data }): Promise<PlaceHit[]> => placeSearch(data.q));
