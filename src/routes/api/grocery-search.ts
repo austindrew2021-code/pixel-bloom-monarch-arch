@@ -37,7 +37,7 @@ export const Route = createFileRoute("/api/grocery-search")({
             body.brand === "independent" || body.brand === "sobeys" || body.brand === "walmart" || body.brand === "other"
               ? body.brand
               : "superstore";
-          const options = await liveStoreOptions({
+          const result = await liveStoreOptions({
             store: {
               brand,
               name: String(body.storeName ?? "Atlantic Superstore").slice(0, 80),
@@ -52,7 +52,11 @@ export const Route = createFileRoute("/api/grocery-search")({
             lon: Number(body.lon) || undefined,
             storeId: body.storeId ? String(body.storeId).slice(0, 12) : undefined,
           });
-          return Response.json({ options, live: options.some((option) => option.live) });
+          return Response.json({
+            options: result.options,
+            live: result.options.some((option) => option.live),
+            blocked: result.blocked,
+          });
         } catch {
           return Response.json({ options: [], live: false });
         }

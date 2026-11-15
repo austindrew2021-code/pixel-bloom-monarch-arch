@@ -111,6 +111,151 @@ export function needEach(qty: number, unit: string): number | null {
 
 type Cover = { packs: number; totalCad: number; leftover: number };
 
+/** Dollars on a shelf card. Unit prices, "was" prices, and "save $2" are not the pack you pay. */
+export function lowestShelfPrice(text: string): number | null {
+  const cleaned = text
+    .replace(/,/g, "")
+    .replace(/\$\s*\d+(?:\.\d+)?\s*\/\s*[\d.]*\s*(?:g|kg|ml|l|oz|lb|ea|100\s*g)\b/gi, " ")
+    .replace(/\b(?:was|reg\.?|regular|orig\.?|original)\s*\$\s*\d+(?:\.\d{1,2})?/gi, " ")
+    .replace(/\b(?:save|off|earn)\s*\$\s*\d+(?:\.\d{1,2})?/gi, " ");
+  const nums: number[] = [];
+  for (const m of cleaned.matchAll(/\$\s*(\d+(?:\.\d{1,2})?)/g)) {
+    const n = Number(m[1]);
+    if (n > 0 && n < 500) nums.push(roundMoney(n));
+  }
+  if (!nums.length) return null;
+  const packs = nums.filter((n) => n >= 0.5);
+  const pool = packs.length ? packs : nums;
+  return Math.min(...pool);
+}
+
+export type ShelfPricing = {
+  price?: unknown;
+  wasPrice?: unknown;
+  displayPrice?: unknown;
+  memberOnlyPrice?: unknown;
+  mopDisplayPrice?: unknown;
+};
+
+export type ShelfDeal = { type?: string | null; text?: string | null; name?: string | null } | null;
+
+function asPackMoney(raw: unknown): number | null {
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "number") return raw > 0 && raw < 500 ? roundMoney(raw) : null;
+  if (typeof raw === "string") return lowestShelfPrice(raw.includes("$") ? raw : `$${raw}`);
+  if (typeof raw === "object") {
+    const row = raw as { value?: unknown; unit?: string; type?: string };
+    const unit = `${row.unit ?? ""} ${row.type ?? ""}`.toLowerCase();
+    if (/100\s*g|\bkg\b|\/|\blb\b|\bml\b/.test(unit)) return null;
+    if ("value" in row) return asPackMoney(row.value);
+  }
+  return null;
+}
+
+/** Price the cook pays for one pack: the lower of current, displayed, and member. Never the higher was-price, never $/100g. */
+export function payablePackPrice(
+  pricing?: ShelfPricing | null,
+  deal?: ShelfDeal,
+): { priceCad: number | null; dealCount?: number; dealCad?: number } {
+  const candidates: number[] = [];
+  for (const raw of [pricing?.price, pricing?.displayPrice, pricing?.memberOnlyPrice, pricing?.mopDisplayPrice]) {
+    const n = asPackMoney(raw);
+    if (n != null) candidates.push(n);
+  }
+  const dealText = `${deal?.text ?? ""} ${deal?.name ?? ""}`.trim();
+  let dealCount: number | undefined;
+  let dealCad: number | undefined;
+  const multi = dealText.match(/(\d{1,2})\s*(?:for|\/)\s*\$?\s*(\d+(?:\.\d{1,2})?)/i);
+  if (multi) {
+    const count = Number(multi[1]);
+    const cad = Number(multi[2]);
+    if (count >= 2 && count <= 24 && cad > 0 && cad < 500) {
+      dealCount = count;
+      dealCad = roundMoney(cad);
+    }
+  } else {
+    const sale = lowestShelfPrice(dealText);
+    if (sale != null) candidates.push(sale);
+  }
+  const was = asPackMoney(pricing?.wasPrice);
+  const save = dealText.match(/\b(?:save|off)\s*\$?\s*(\d+(?:\.\d{1,2})?)/i);
+  if (was != null && save) {
+    const cut = roundMoney(was - Number(save[1]));
+    if (cut > 0 && cut < was) candidates.push(cut);
+  }
+  if (!candidates.length) return { priceCad: null, dealCount, dealCad };
+  return { priceCad: Math.min(...candidates), dealCount, dealCad };
+}
+
+/** "Bag of 5" and "5 pack" count as five of the food, even when the size line says 1 ea. */
+export function packCountFromName(name: string): number | undefined {
+  const text = name.replace(/\s+/g, " ").trim();
+  const bag = text.match(/\b(?:bag|pack|package|box|tray)\s+of\s+(\d{1,2})\b/i);
+  const lead = text.match(/\b(\d{1,2})\s*[- ]?(?:pk|packs|pack|ct|count|counts)\b/i);
+  const raw = bag?.[1] ?? lead?.[1];
+  if (!raw) return undefined;
+  const n = Number(raw);
+  if (n >= 2 && n <= 48) return n;
+  return undefined;
+}
+
+export function shelfProduct(
+  brand: StoreBrand,
+  tile: {
+    brand?: string;
+    title?: string;
+    packageSizing?: string;
+    pricing?: ShelfPricing | null;
+    deal?: ShelfDeal;
+  },
+): StapleProduct | null {
+  const title = `${tile.brand ?? ""} ${tile.title ?? ""}`.replace(/\s+/g, " ").trim();
+  const pay = payablePackPrice(tile.pricing, tile.deal);
+  if (!title || pay.priceCad == null) return null;
+  const sizing = parsePackageSizing(tile.packageSizing || "");
+  const named = packCountFromName(title);
+  const each = named && named > 1 && (!sizing.each || sizing.each <= 1) ? named : sizing.each;
+  return {
+    brand,
+    name: title,
+    sizeLabel: sizing.sizeLabel || (each ? `${each} ct` : "1 ea"),
+    priceCad: pay.priceCad,
+    grams: sizing.grams,
+    ml: sizing.ml,
+    each,
+    unitHint: sizing.unitHint,
+    dealCount: pay.dealCount,
+    dealCad: pay.dealCad,
+  };
+}
+
+function coverCount(count: number, product: StapleProduct): Cover {
+  const size = Math.max(1, product.each || 1);
+  const price = product.priceCad;
+  const packs = Math.max(1, Math.ceil(count / size));
+  let bestPacks = packs;
+  let bestTotal = packs * price;
+  const dealCount = product.dealCount;
+  const dealCad = product.dealCad;
+  if (size === 1 && dealCount && dealCad && dealCount >= 2 && dealCad < price * dealCount - 0.009) {
+    const groups = Math.ceil(packs / dealCount);
+    if (groups * dealCad < bestTotal - 0.009) {
+      bestTotal = groups * dealCad;
+      bestPacks = groups * dealCount;
+    }
+    const full = Math.floor(packs / dealCount);
+    const rem = packs - full * dealCount;
+    if (full > 0 && rem > 0) {
+      const mixed = full * dealCad + rem * price;
+      if (mixed < bestTotal - 0.009) {
+        bestTotal = mixed;
+        bestPacks = full * dealCount + rem;
+      }
+    }
+  }
+  return { packs: bestPacks, totalCad: roundMoney(bestTotal), leftover: bestPacks * size - count };
+}
+
 export function coverWith(product: StapleProduct, need: CartNeed, gramsPerCup?: number): Cover | null {
   const price = product.priceCad;
   const needG = needMassG(need.qty, need.unit, gramsPerCup);
@@ -127,10 +272,7 @@ export function coverWith(product: StapleProduct, need: CartNeed, gramsPerCup?: 
   if (product.ml && count != null) {
     return { packs: count, totalCad: roundMoney(count * price), leftover: 0 };
   }
-  if (product.each && count != null) {
-    const packs = Math.max(1, Math.ceil(count / product.each));
-    return { packs, totalCad: roundMoney(packs * price), leftover: packs * product.each - count };
-  }
+  if (product.each && count != null) return coverCount(count, product);
   // Fresh meat sold as 1 tray or per kg still covers a weighed recipe amount.
   if (product.each && needG != null && needG > 0) {
     return { packs: 1, totalCad: roundMoney(price), leftover: 0 };
@@ -199,6 +341,8 @@ export function parsePackageSizing(raw: string): {
   if (ml) return { sizeLabel, unitHint, ml: Number(ml[1]) };
   const each = lower.match(/^([\d.]+)\s*(ea|ct|count|pk|pack)\b/);
   if (each) return { sizeLabel, unitHint, each: Math.max(1, Math.round(Number(each[1]))) };
+  const named = packCountFromName(sizeLabel);
+  if (named) return { sizeLabel, unitHint, each: named };
   return { sizeLabel, unitHint };
 }
 

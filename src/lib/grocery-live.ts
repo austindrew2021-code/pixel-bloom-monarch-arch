@@ -6,9 +6,9 @@ import type { NearbyStore } from "./grocery-stores.ts";
 export async function loadStoreOptions(
   store: NearbyStore,
   line: CartNeed,
-): Promise<{ options: StoreOption[]; live: boolean }> {
+): Promise<{ options: StoreOption[]; live: boolean; blocked: boolean }> {
   const catalog = catalogOptions(store, line, 5);
-  if (!pcxBannerFor(store)) return { options: catalog, live: false };
+  if (!pcxBannerFor(store)) return { options: catalog, live: false, blocked: false };
   try {
     const res = await fetch(kitchenApi("/api/grocery-search"), {
       method: "POST",
@@ -25,11 +25,15 @@ export async function loadStoreOptions(
         storeId: store.pcStoreId,
       }),
     });
-    if (!res.ok) return { options: catalog, live: false };
-    const json = (await res.json()) as { options?: StoreOption[]; live?: boolean };
-    if (json.options && json.options.length > 0) return { options: json.options, live: Boolean(json.live) };
+    if (res.status === 401 || res.status === 403 || res.status === 429) {
+      return { options: catalog, live: false, blocked: true };
+    }
+    if (!res.ok) return { options: catalog, live: false, blocked: false };
+    const json = (await res.json()) as { options?: StoreOption[]; live?: boolean; blocked?: boolean };
+    if (json.blocked) return { options: json.options ?? [], live: false, blocked: true };
+    if (json.options && json.options.length > 0) return { options: json.options, live: Boolean(json.live), blocked: false };
   } catch {
     // Store search is down — use the packed catalog.
   }
-  return { options: catalog, live: false };
+  return { options: catalog, live: false, blocked: false };
 }

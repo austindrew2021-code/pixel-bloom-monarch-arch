@@ -215,7 +215,7 @@ export function healthMacroBump(day: HealthDay): { cal: number; protein: number;
     carbs += Math.round(over / 18);
   }
   if (day.exerciseMin >= day.exerciseGoal + 15) carbs += 20;
-  if (day.sleepHours < 6) protein += 6;
+  if (day.sleepHours > 0 && day.sleepHours < 6) protein += 6;
   return { cal, protein, carbs };
 }
 

@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Plate } from "@/components/plate";
+import { RouteSpark } from "@/components/route-map";
 import { TesterGate } from "@/components/tester-gate";
 import { dayFuel, isoDate } from "@/lib/fuel";
 import { resolvedTimeLabel } from "@/lib/recipe-time";
@@ -22,6 +23,7 @@ function WatchFace() {
   const xp = useSpoonful((s) => s.xp);
   const onboarded = useSpoonful((s) => s.onboarded);
   const body = useSpoonful((s) => s.body);
+  const health = useSpoonful((s) => s.healthByDate[isoDate()]);
   const [allowed, setAllowed] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -43,6 +45,7 @@ function WatchFace() {
     body,
   });
   const rank = rankProgress(xp);
+  const lastLine = [...workouts].reverse().find((workout) => workout.route && workout.route.length > 1);
 
   if (allowed !== true) {
     if (allowed === false) return <TesterGate onUnlock={() => setAllowed(true)} />;
@@ -66,6 +69,20 @@ function WatchFace() {
       )}
       <p className="mt-6 font-display text-2xl tabular-nums">{Math.round(fuel.remaining.cal)}</p>
       <p className="text-xs text-muted-foreground">kcal left · {fuel.remaining.protein}g protein</p>
+      <p className="mt-3 text-sm tabular-nums text-muted-foreground">
+        {health?.sleepHours ? `${health.sleepHours} h sleep` : "Sleep not logged"}
+        {health?.restingHr ? ` · resting ${health.restingHr}` : ""}
+        {stepsByDate[today] ? ` · ${stepsByDate[today].toLocaleString()} steps` : ""}
+      </p>
+      {lastLine?.route ? (
+        <div className="mt-3 flex items-center gap-2">
+          <RouteSpark points={lastLine.route} />
+          <p className="text-xs text-muted-foreground">Last route is on the phone that recorded it.</p>
+        </div>
+      ) : null}
+      <p className="mt-3 max-w-xs text-center text-xs leading-relaxed text-muted-foreground">
+        Heart rate and the live map stay on the phone while you record. This face is the plate.
+      </p>
       <p className="mt-4 text-sm font-medium">{rank.current.title}</p>
       <a href="/" className="mt-6 text-sm text-spark">
         Open kitchen

@@ -5,13 +5,14 @@ import {
   matchStaple,
   normalizeKey,
   optionFromRank,
-  parsePackageSizing,
   rankEnough,
   searchTermFor,
+  shelfProduct,
   type CartNeed,
   type StoreOption,
 } from "./grocery-pick.ts";
 import { kmBetween, productPageUrl, isPcxCartId, type StoreBrand } from "./grocery-stores.ts";
+import { looksLikeBotWall } from "./store-page-pick.ts";
 import type { StapleProduct } from "./grocery-staples.ts";
 
 const PCX = "https://api.pcexpress.ca";
@@ -24,13 +25,34 @@ type Tile = {
   title?: string;
   packageSizing?: string;
   productImage?: { smallUrl?: string; thumbnailUrl?: string; imageUrl?: string }[];
-  pricing?: { price?: string };
+  pricing?: {
+    price?: unknown;
+    wasPrice?: unknown;
+    displayPrice?: unknown;
+    memberOnlyPrice?: unknown;
+    mopDisplayPrice?: unknown;
+  };
+  deal?: { type?: string | null; text?: string | null; name?: string | null } | null;
+  badges?: { dealBadge?: { type?: string | null; text?: string | null; name?: string | null } | null };
   inventoryIndicator?: string | null;
   link?: string;
   articleNumber?: string;
 };
 
 const locatorCache = new Map<string, { at: number; storeId: string }>();
+const searchCache = new Map<string, { at: number; tiles: Tile[]; blocked: boolean }>();
+let shopperSession: { cart: string; user: string; session: string } | null = null;
+
+function shopperIds() {
+  if (!shopperSession) {
+    shopperSession = {
+      cart: crypto.randomUUID(),
+      user: crypto.randomUUID(),
+      session: crypto.randomUUID(),
+    };
+  }
+  return shopperSession;
+}
 
 export async function liveStoreOptions(input: {
   store: { brand: StoreBrand; name: string };
@@ -38,16 +60,17 @@ export async function liveStoreOptions(input: {
   lat?: number;
   lon?: number;
   storeId?: string;
-}): Promise<StoreOption[]> {
+}): Promise<{ options: StoreOption[]; blocked: boolean }> {
   const banner = pcxBannerFor(input.store);
-  if (!banner) return [];
+  if (!banner) return { options: [], blocked: false };
   const storeId =
     input.storeId ||
     (await nearestStoreId(banner, input.lat, input.lon)) ||
     (banner === "rass" ? FALLBACK_RASS : "");
-  if (!storeId) return [];
-  const tiles = await searchTiles(banner, storeId, input.line.name);
-  const products = tiles
+  if (!storeId) return { options: [], blocked: false };
+  const found = await searchTiles(banner, storeId, input.line.name);
+  if (found.blocked && found.tiles.length === 0) return { options: [], blocked: true };
+  const products = found.tiles
     .map((tile) => tileToProduct(input.store, tile))
     .filter((p): p is StapleProduct => Boolean(p));
   const relevant = products.filter(
@@ -57,7 +80,10 @@ export async function liveStoreOptions(input: {
   const gramsPerCup = staple?.gramsPerCup ?? gramsPerCupGuess(input.line.name);
   const liveRanked = rankEnough(input.line, relevant, gramsPerCup, 5);
   if (liveRanked.length >= 5) {
-    return liveRanked.map((row, index) => optionFromRank(input.store, input.line, row, index, true));
+    return {
+      options: liveRanked.map((row, index) => optionFromRank(input.store, input.line, row, index, true)),
+      blocked: found.blocked,
+    };
   }
   const catalogProducts = staple?.products.filter((p) => p.brand === input.store.brand) ?? [];
   const seen = new Set(liveRanked.map((row) => normalizeKey(row.product.name)));
@@ -65,11 +91,14 @@ export async function liveStoreOptions(input: {
     (row) => !seen.has(normalizeKey(row.product.name)),
   );
   const ranked = [...liveRanked, ...catalogFill].slice(0, 5);
-  if (ranked.length === 0) return catalogOptions(input.store, input.line, 5);
+  if (ranked.length === 0) return { options: catalogOptions(input.store, input.line, 5), blocked: found.blocked };
   const liveNames = new Set(liveRanked.map((row) => normalizeKey(row.product.name)));
-  return ranked.map((row, index) =>
-    optionFromRank(input.store, input.line, row, index, liveNames.has(normalizeKey(row.product.name))),
-  );
+  return {
+    options: ranked.map((row, index) =>
+      optionFromRank(input.store, input.line, row, index, liveNames.has(normalizeKey(row.product.name))),
+    ),
+    blocked: found.blocked,
+  };
 }
 
 export async function resolvePcxStoreId(banner: Banner, lat?: number, lon?: number): Promise<string> {
@@ -111,12 +140,37 @@ async function nearestStoreId(banner: Banner, lat?: number, lon?: number): Promi
   }
 }
 
-async function searchTiles(banner: Banner, storeId: string, query: string): Promise<Tile[]> {
+async function searchTiles(banner: Banner, storeId: string, query: string): Promise<{ tiles: Tile[]; blocked: boolean }> {
   const term = searchTermFor(query);
-  const pages = await Promise.all([1, 2, 3].map((from) => searchPage(banner, storeId, term, from)));
+  const key = `${banner}:${storeId}:${term}`;
+  const hit = searchCache.get(key);
+  const maxAge = hit?.blocked ? 2 * 60 * 1000 : 10 * 60 * 1000;
+  if (hit && Date.now() - hit.at < maxAge) return { tiles: hit.tiles, blocked: hit.blocked };
+  const first = await searchPage(banner, storeId, term, 1);
+  if (first.blocked) {
+    const row = { at: Date.now(), tiles: [] as Tile[], blocked: true };
+    searchCache.set(key, row);
+    return row;
+  }
+  let tiles = dedupeTiles(first.tiles);
+  if (tiles.length >= 24) {
+    const second = await searchPage(banner, storeId, term, 2);
+    if (!second.blocked) tiles = dedupeTiles([...tiles, ...second.tiles]);
+    else {
+      const row = { at: Date.now(), tiles, blocked: true };
+      searchCache.set(key, row);
+      return row;
+    }
+  }
+  const row = { at: Date.now(), tiles, blocked: false };
+  searchCache.set(key, row);
+  return row;
+}
+
+function dedupeTiles(pages: Tile[]): Tile[] {
   const seen = new Set<string>();
   const tiles: Tile[] = [];
-  for (const tile of pages.flat()) {
+  for (const tile of pages) {
     const id = tile.productId || tile.articleNumber || `${tile.brand}:${tile.title}`;
     if (!id || seen.has(id)) continue;
     seen.add(id);
@@ -125,10 +179,11 @@ async function searchTiles(banner: Banner, storeId: string, query: string): Prom
   return tiles;
 }
 
-async function searchPage(banner: Banner, storeId: string, term: string, from: number): Promise<Tile[]> {
+async function searchPage(banner: Banner, storeId: string, term: string, from: number): Promise<{ tiles: Tile[]; blocked: boolean }> {
   const origin = pcxOriginFor(banner);
+  const who = shopperIds();
   const body = {
-    cart: { cartId: "00000000-0000-0000-0000-000000000001" },
+    cart: { cartId: who.cart },
     fulfillmentInfo: {
       storeId,
       pickupType: "STORE",
@@ -144,8 +199,8 @@ async function searchPage(banner: Banner, storeId: string, term: string, from: n
     },
     banner,
     userData: {
-      domainUserId: "00000000-0000-0000-0000-000000000002",
-      sessionId: "00000000-0000-0000-0000-000000000003",
+      domainUserId: who.user,
+      sessionId: who.session,
     },
     device: { screenSize: 390 },
     searchRelatedInfo: { term, options: [] },
@@ -157,38 +212,39 @@ async function searchPage(banner: Banner, storeId: string, term: string, from: n
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(10000),
     });
-    if (!res.ok) return [];
-    const json = (await res.json()) as {
+    const text = await res.text();
+    const blocked =
+      res.status === 401 || res.status === 403 || res.status === 429 || looksLikeBotWall(text);
+    if (blocked) return { tiles: [], blocked: true };
+    if (!res.ok) return { tiles: [], blocked: false };
+    const json = JSON.parse(text) as {
       layout?: { sections?: { mainContentCollection?: { components?: { data?: { productTiles?: Tile[] } }[] } } };
     };
-    return json.layout?.sections?.mainContentCollection?.components?.[0]?.data?.productTiles ?? [];
+    return { tiles: json.layout?.sections?.mainContentCollection?.components?.[0]?.data?.productTiles ?? [], blocked: false };
   } catch {
-    return [];
+    return { tiles: [], blocked: false };
   }
 }
 
 function tileToProduct(store: { brand: StoreBrand; name: string }, tile: Tile): StapleProduct | null {
-  const title = `${tile.brand ?? ""} ${tile.title ?? ""}`.replace(/\s+/g, " ").trim();
-  const priceCad = Number(tile.pricing?.price);
-  if (!title || !Number.isFinite(priceCad) || priceCad <= 0) return null;
-  const sizing = parsePackageSizing(tile.packageSizing || "");
+  const base = shelfProduct(store.brand, {
+    brand: tile.brand,
+    title: tile.title,
+    packageSizing: tile.packageSizing,
+    pricing: tile.pricing,
+    deal: tile.deal ?? tile.badges?.dealBadge ?? null,
+  });
+  if (!base) return null;
   const img = tile.productImage?.[0];
   const imageUrl = img?.smallUrl || img?.thumbnailUrl || img?.imageUrl || "";
   const id = tile.productId || tile.articleNumber;
   const path = tile.link || (tile.productId ? `/p/${tile.productId}` : "");
   const stock = (tile.inventoryIndicator || "").toString().toUpperCase();
   return {
-    brand: store.brand,
-    name: title,
-    sizeLabel: sizing.sizeLabel || "1 ea",
-    priceCad,
-    grams: sizing.grams,
-    ml: sizing.ml,
-    each: sizing.each,
+    ...base,
     url: productPageUrl(store, id) || productPageUrl(store, path),
     imageUrl,
     productId: id,
-    unitHint: sizing.unitHint,
     inStock: !stock || (!stock.includes("OUT") && stock !== "OOS"),
   };
 }

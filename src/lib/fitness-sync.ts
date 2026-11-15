@@ -39,6 +39,33 @@ export type HealthDay = {
   weightKg: number;
 };
 
+export function blankHealthDay(date: string): HealthDay {
+  return {
+    date,
+    steps: 0,
+    distanceKm: 0,
+    flights: 0,
+    activeKcal: 0,
+    basalKcal: 0,
+    exerciseMin: 0,
+    standHours: 0,
+    moveGoal: 500,
+    exerciseGoal: 30,
+    standGoal: 12,
+    heartRate: 0,
+    restingHr: 0,
+    walkingHrAvg: 0,
+    hrvMs: 0,
+    vo2max: 0,
+    spo2: 0,
+    sleepHours: 0,
+    sleepScore: 0,
+    waterMl: 0,
+    mindfulMin: 0,
+    weightKg: 0,
+  };
+}
+
 const STEP_BASE: Record<BodyProfile["activity"], number> = {
   sedentary: 3900,
   light: 6400,
@@ -151,8 +178,11 @@ export function pullHealthDay(
 }
 
 export function recoveryLabel(day: HealthDay): "low" | "ok" | "high" {
-  if (!day.hrvMs && !day.sleepHours) return "ok";
-  if (day.hrvMs < 32 || day.sleepHours < 6.2 || day.sleepScore < 62) return "low";
-  if (day.hrvMs >= 55 && day.sleepHours >= 7.4) return "high";
+  const hrv = day.hrvMs > 0 ? day.hrvMs : 0;
+  const sleep = day.sleepHours > 0 ? day.sleepHours : 0;
+  const score = day.sleepScore > 0 ? day.sleepScore : 0;
+  if (!hrv && !sleep && !score) return "ok";
+  if ((hrv > 0 && hrv < 32) || (sleep > 0 && sleep < 6.2) || (score > 0 && score < 62)) return "low";
+  if (hrv >= 55 && sleep >= 7.4) return "high";
   return "ok";
 }

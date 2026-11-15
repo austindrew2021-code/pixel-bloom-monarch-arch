@@ -2,7 +2,7 @@ import { BookOpen, CalendarDays, Camera, Droplets, Dumbbell, Palette, Pencil, Sh
 import { useEffect, useRef, useState } from "react";
 import { CelebrateOverlay } from "@/components/celebrate";
 import { DessertsView } from "@/components/desserts-view";
-import { FitView } from "@/components/fit-view";
+import { FitnessApp } from "@/components/fitness-app";
 import { Wordmark } from "@/components/kitchen-hero";
 import { Onboarding } from "@/components/onboarding";
 import { PeopleView } from "@/components/people-view";
@@ -20,7 +20,6 @@ import { KitchenShort } from "@/components/kitchen-short";
 import { ThemePicker } from "@/components/theme-picker";
 import { SkyView } from "@/components/sky-view";
 import { GlyphFrame } from "@/components/theme-glyphs";
-import { TrainView } from "@/components/train-view";
 import { UsernameGate } from "@/components/username-gate";
 import { Walkthrough } from "@/components/walkthrough";
 import { Button } from "@/components/ui/button";
@@ -100,7 +99,7 @@ export function SpoonfulApp() {
   // typed log, the recipe picker all raise it), so it is the signal we want.
   // `inert` puts the app out of reach for exactly as long as one is up; the
   // takeovers themselves render outside the inert subtree, so they still work.
-  const chromeCovered = extras || tab === "train" || focusLock > 0;
+  const chromeCovered = extras || tab === "train" || tab === "fit" || focusLock > 0 || social;
 
   const tabs: { id: TabId; label: string; icon: typeof CalendarDays }[] = nextGen
     ? [
@@ -177,7 +176,7 @@ export function SpoonfulApp() {
 
   useEffect(() => {
     if (tab === "people") setSocial(true);
-    else returnTab.current = tab;
+    else if (tab !== "fit" && tab !== "train") returnTab.current = tab;
   }, [tab]);
 
   useEffect(() => {
@@ -331,6 +330,11 @@ export function SpoonfulApp() {
     if (tab === "people") setTab(returnTab.current === "people" ? "plan" : returnTab.current);
   }
 
+  function closeFitness() {
+    const back = returnTab.current;
+    setTab(back === "fit" || back === "train" || back === "people" ? "plan" : back);
+  }
+
   return (
     <div
       className="relative min-h-dvh max-w-full overflow-x-clip text-foreground"
@@ -440,7 +444,6 @@ export function SpoonfulApp() {
       {tab === "desserts" ? <DessertsView /> : null}
       {tab === "snap" ? <SnapView /> : null}
       {tab === "people" ? <PeopleView /> : null}
-      {tab === "fit" ? <FitView onOpenStore={() => setExtras(true)} /> : null}
       {tab === "shop" ? <ShopView onOpenStore={() => setExtras(true)} /> : null}
 
       {extras ? (
@@ -516,6 +519,17 @@ export function SpoonfulApp() {
 
       {walkthroughOpen ? <Walkthrough onExtras={setExtras} /> : null}
       {social ? <SocialApp onClose={closeSocial} /> : null}
+      {tab === "fit" || tab === "train" ? (
+        <FitnessApp
+          key={tab}
+          initialPane={tab === "train" ? "train" : "today"}
+          onClose={closeFitness}
+          onOpenStore={() => {
+            closeFitness();
+            setExtras(true);
+          }}
+        />
+      ) : null}
 
       <nav
         className="fixed inset-x-0 bottom-0 z-40 overflow-visible border-t border-border bg-card/95 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur-md"
@@ -570,11 +584,6 @@ export function SpoonfulApp() {
       </nav>
       </div>
       )}
-      {tab === "train" && !skyOpen ? (
-        <div className="train-hud-screen">
-          <TrainView onOpenStore={() => setExtras(true)} />
-        </div>
-      ) : null}
     </div>
   );
 }

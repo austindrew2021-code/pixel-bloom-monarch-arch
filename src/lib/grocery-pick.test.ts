@@ -8,9 +8,11 @@ import {
   matchStaple,
   parsePackageSizing,
   overlaySearchQuery,
+  payablePackPrice,
   pickCheapestEnough,
   pickForLine,
   searchTermFor,
+  shelfProduct,
 } from "./grocery-pick.ts";
 import { STAPLES } from "./grocery-staples.ts";
 
@@ -102,6 +104,56 @@ test("view options lists the cheapest covering packs first", () => {
   assert.match(options[0]!.name, /No Name/i);
   assert.equal(options[0]!.packs, 1);
   assert.ok(options[0]!.totalCad <= options[1]!.totalCad);
+});
+
+test("a sale 5-pack of avocados beats the regular 3-pack", () => {
+  const five = shelfProduct("superstore", {
+    brand: "PC",
+    title: "Hass Avocados Bag of 5",
+    packageSizing: "1 ea",
+    pricing: { price: "6.99", wasPrice: "6.99", displayPrice: "$3.99" },
+  });
+  const three = shelfProduct("superstore", {
+    brand: "PC",
+    title: "Hass Avocados 3 Pack",
+    packageSizing: "1 ea",
+    pricing: { price: "5.99" },
+  });
+  assert.equal(five?.priceCad, 3.99);
+  assert.equal(five?.each, 5);
+  assert.equal(three?.priceCad, 5.99);
+  assert.equal(three?.each, 3);
+  const pick = pickCheapestEnough({ name: "avocado", qty: 2, unit: "", aisle: "Produce" }, [three!, five!]);
+  assert.match(pick!.product.name, /Bag of 5/);
+  assert.equal(pick!.cover.packs, 1);
+  assert.equal(pick!.cover.totalCad, 3.99);
+});
+
+test("5 for $3.99 covers the meal cheaper than two 3-packs", () => {
+  const loose = shelfProduct("superstore", {
+    title: "Hass Avocado",
+    packageSizing: "1 ea",
+    pricing: { price: "1.69" },
+    deal: { text: "5 for $3.99" },
+  });
+  const three = shelfProduct("superstore", {
+    title: "Hass Avocados 3 Pack",
+    packageSizing: "3 pk",
+    pricing: { price: "5.99" },
+  });
+  const pick = pickCheapestEnough({ name: "avocado", qty: 4, unit: "", aisle: "Produce" }, [three!, loose!]);
+  assert.match(pick!.product.name, /Hass Avocado$/);
+  assert.equal(pick!.cover.totalCad, 3.99);
+});
+
+test("was price and unit price are not what you pay", () => {
+  assert.equal(payablePackPrice({ price: "5.99", wasPrice: "7.99", displayPrice: "$1.32/100g $3.99" }).priceCad, 3.99);
+  assert.equal(payablePackPrice({ price: "7.99", wasPrice: "7.99" }, { text: "SAVE $4" }).priceCad, 3.99);
+});
+
+test("bag of 5 is five pieces, a gram size stays grams", () => {
+  assert.equal(parsePackageSizing("Bag of 5").each, 5);
+  assert.equal(parsePackageSizing("227 g, $1.67/100g").grams, 227);
 });
 
 test("chicken breasts is not deli meat or a frozen meal", () => {

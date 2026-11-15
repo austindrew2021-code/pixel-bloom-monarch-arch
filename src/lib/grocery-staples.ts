@@ -13,6 +13,9 @@ export type StapleProduct = {
   productId?: string;
   unitHint?: string;
   inStock?: boolean;
+  /** Multi-buy on one loose item, e.g. 5 for $3.99. Not set when the pack itself is already the sale. */
+  dealCount?: number;
+  dealCad?: number;
 };
 
 

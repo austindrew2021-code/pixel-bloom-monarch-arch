@@ -1,4 +1,4 @@
-import { isRelevantProduct } from "./grocery-pick.ts";
+import { isRelevantProduct, lowestShelfPrice } from "./grocery-pick.ts";
 
 export type StorePageCard = {
   name: string;
@@ -6,13 +6,7 @@ export type StorePageCard = {
 };
 
 export function parseCardPrice(text: string): number | null {
-  const cleaned = text
-    .replace(/,/g, "")
-    .replace(/\$\s*\d+(?:\.\d+)?\s*\/\s*[\d.]*\s*(g|kg|ml|l|oz|lb|ea|100\s*g)/gi, " ");
-  const m = cleaned.match(/\$\s*(\d+(?:\.\d{1,2})?)/);
-  if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isFinite(n) && n > 0 && n < 500 ? n : null;
+  return lowestShelfPrice(text);
 }
 
 export function looksLikeBotWall(text: string): boolean {

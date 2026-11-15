@@ -2217,25 +2217,29 @@
   animation: social-pop 0.55s ease forwards;
 }
 .social-stage {
-  --color-background: #000000;
-  --color-foreground: #f5f5f5;
-  --color-card: #000000;
-  --color-card-foreground: #f5f5f5;
-  --color-popover: #121212;
-  --color-popover-foreground: #f5f5f5;
-  --color-muted: #1c1c1c;
-  --color-muted-foreground: #a8a8a8;
+  --color-background: #ffffff;
+  --color-foreground: #000000;
+  --color-card: #ffffff;
+  --color-card-foreground: #000000;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #000000;
+  --color-muted: #efefef;
+  --color-muted-foreground: #737373;
   --color-primary: #0095f6;
   --color-primary-foreground: #ffffff;
-  --color-spark: #ff2d55;
+  --color-spark: #ff3040;
   --color-spark-foreground: #ffffff;
-  --color-border: #262626;
-  --color-input: #262626;
-  --color-ring: #a8a8a8;
+  --color-border: #dbdbdb;
+  --color-input: #efefef;
+  --color-ring: #000000;
   --font-display: "Figtree", "Segoe UI", system-ui, sans-serif;
-  background: #000000;
-  color: #f5f5f5;
+  background: #ffffff;
+  color: #000000;
   font-family: var(--font-sans);
+}
+.social-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 520px;
 }
 .social-ring {
   background: conic-gradient(from 210deg, #f9ce34, #ee2a7b 42%, #6228d7 72%, #f9ce34);
@@ -2259,4 +2263,194 @@
 @media (prefers-reduced-motion: reduce) {
   .social-reel-still,
   .social-heart { animation: none; }
+}
+.fit-stage {
+  --color-background: #090b0a;
+  --color-foreground: #f4f7f5;
+  --color-card: #141816;
+  --color-card-foreground: #f4f7f5;
+  --color-popover: #141816;
+  --color-popover-foreground: #f4f7f5;
+  --color-muted: #1c2420;
+  --color-muted-foreground: #93a199;
+  --color-primary: #3ee0a0;
+  --color-primary-foreground: #062116;
+  --color-spark: #ff5a36;
+  --color-spark-foreground: #fff8f5;
+  --color-border: #24302a;
+  --color-input: #24302a;
+  --color-ring: #3ee0a0;
+  --color-destructive: #ff5d73;
+  background: var(--color-background);
+  color: var(--color-foreground);
+}
+/* Four sports, four rooms. The kitchen skin stays off. */
+.fit-stage[data-sport="weights"] {
+  --color-background: #0b0d12;
+  --color-foreground: #f4f6f8;
+  --color-card: #151922;
+  --color-card-foreground: #f4f6f8;
+  --color-popover: #151922;
+  --color-popover-foreground: #f4f6f8;
+  --color-muted: #1c2230;
+  --color-muted-foreground: #9aa3b2;
+  --color-primary: #3d7eff;
+  --color-primary-foreground: #f5f8ff;
+  --color-spark: #3d7eff;
+  --color-spark-foreground: #f5f8ff;
+  --color-border: #2a3142;
+  --color-input: #2a3142;
+  --color-ring: #3d7eff;
+}
+.fit-stage[data-sport="run"] {
+  --color-background: #f6f3ee;
+  --color-foreground: #1b140f;
+  --color-card: #fffdfb;
+  --color-card-foreground: #1b140f;
+  --color-popover: #fffdfb;
+  --color-popover-foreground: #1b140f;
+  --color-muted: #efeae3;
+  --color-muted-foreground: #6e645c;
+  --color-primary: #1b140f;
+  --color-primary-foreground: #fff7f2;
+  --color-spark: #e10600;
+  --color-spark-foreground: #fff7f2;
+  --color-border: #e6dfd6;
+  --color-input: #e6dfd6;
+  --color-ring: #e10600;
+}
+.fit-stage[data-sport="ride"] {
+  --color-background: #0c0d10;
+  --color-foreground: #f6f3ee;
+  --color-card: #17191f;
+  --color-card-foreground: #f6f3ee;
+  --color-popover: #17191f;
+  --color-popover-foreground: #f6f3ee;
+  --color-muted: #22252c;
+  --color-muted-foreground: #a39e94;
+  --color-primary: #ff6a1a;
+  --color-primary-foreground: #1a0c04;
+  --color-spark: #ff6a1a;
+  --color-spark-foreground: #1a0c04;
+  --color-border: #2c3038;
+  --color-input: #2c3038;
+  --color-ring: #ff6a1a;
+}
+.fit-stage[data-sport="home"] {
+  --color-background: #efefed;
+  --color-foreground: #111111;
+  --color-card: #ffffff;
+  --color-card-foreground: #111111;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #111111;
+  --color-muted: #e4e4e1;
+  --color-muted-foreground: #5e5e5e;
+  --color-primary: #111111;
+  --color-primary-foreground: #ffffff;
+  --color-spark: #111111;
+  --color-spark-foreground: #ffffff;
+  --color-border: #dededb;
+  --color-input: #dededb;
+  --color-ring: #111111;
+}
+.fit-stage .train-hud {
+  min-height: 0;
+}
+
+/* Fitness ignores kitchen skins. Brass, neon, and nebula frames were stacking on the logger and clipping the set row. */
+.fit-stage:has(.lift-deck) > nav,
+.fit-stage:has(.follow-along) > nav,
+.fit-stage:has(.record-deck) > nav {
+  display: none;
+}
+.fit-stage .lift-deck .lift-card,
+.fit-stage .lift-deck .lift-rest-bar {
+  background-color: var(--color-card);
+  background-image: none;
+  box-shadow: none;
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  outline: none;
+}
+.fit-stage .lift-deck .lift-chip,
+.fit-stage .lift-deck .lift-log,
+.fit-stage .lift-deck .lift-finish,
+.fit-stage .lift-deck .lift-rest,
+.fit-stage .lift-deck .lift-feel,
+.fit-stage .lift-deck .lift-qty,
+.fit-stage .lift-deck .lift-reps,
+.fit-stage .lift-deck .lift-icon {
+  border-radius: 0.75rem;
+  box-shadow: none;
+  outline: none;
+  background-image: none;
+  letter-spacing: normal;
+  text-transform: none;
+  font-family: inherit;
+}
+.fit-stage .train-hud .hud-panel,
+.fit-stage .train-hud .hud-gauge,
+.fit-stage .train-hud .hud-gauge--dial,
+.fit-stage .train-hud .train-hud--advanced .hud-panel {
+  background-color: var(--color-card);
+  background-image: none;
+  box-shadow: none;
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  outline: none;
+  color: var(--color-foreground);
+  min-height: 0;
+  text-shadow: none;
+}
+.fit-stage .train-hud .hud-btn,
+.fit-stage .train-hud .hud-chip,
+.fit-stage .train-hud .hud-day,
+.fit-stage .train-hud .hud-glyph,
+.fit-stage .train-hud .hud-mode,
+.fit-stage .train-hud .hud-mode__btn {
+  border-radius: 0.75rem;
+  box-shadow: none;
+  outline: none;
+  background-image: none;
+  letter-spacing: normal;
+  text-transform: none;
+  font-family: inherit;
+  color: var(--color-foreground);
+}
+.fit-stage .train-hud .hud-btn-on,
+.fit-stage .train-hud .hud-chip-on,
+.fit-stage .train-hud .hud-day.is-on,
+.fit-stage .train-hud .hud-mode__btn.is-on {
+  background: var(--color-spark);
+  color: var(--color-spark-foreground);
+}
+.fit-stage .train-hud .hud-gauge__val {
+  color: var(--color-foreground);
+  text-shadow: none;
+}
+.fit-stage .train-session {
+  background-color: var(--color-card);
+  background-image: none;
+  box-shadow: none;
+  border: 1px solid var(--color-border);
+  border-radius: 1.5rem;
+  color: var(--color-foreground);
+}
+.fit-stage .train-session::before,
+.fit-stage .train-session::after {
+  content: none;
+}
+.fit-stage .train-hud .hud-btn,
+.fit-stage .train-hud .hud-chip,
+.fit-stage .train-hud .hud-day,
+.fit-stage .train-hud .hud-mode__btn {
+  background-color: var(--color-muted);
+}
+.fit-stage .lift-deck .lift-rest {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+}
+.fit-stage .hud-kicker {
+  letter-spacing: 0.14em;
+  color: var(--color-primary);
 }
