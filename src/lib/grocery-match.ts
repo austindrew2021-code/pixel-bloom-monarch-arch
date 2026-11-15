@@ -370,7 +370,7 @@ const FREE_CLAIM = /\b(?:gluten|wheat|dairy|milk|lactose|nut|peanut|tree nut|egg
  */
 const PLANT_LOOKALIKE = /\b(?:coconut|almond|oat|soy|soya|rice|cashew|hemp|pea|macadamia|hazelnut|plant|plant[- ]based|vegan|non[- ]dairy|peanut|nut|seed|sunflower|sunflower seed|pumpkin seed|cocoa|cacao|shea|apple|pumpkin|sesame)s? (?:milk|beverage|butter|cream|creamer|cheese|yogh?urt|spread)\b|\bbutter (?:beans?|lettuce|nut squash)\b|\bbutternut\b|\bcream of tartar\b|\bcream style corn\b|\bcreamed corn\b|\bmilk thistle\b/gi;
 
-const MEAT_LOOKALIKE = /\b(?:plant[- ]based|vegan|veggie|vegetarian|meatless|meat[- ]free|beyond|impossible|soy|tofu)\s+(?:meat|chicken|beef|pork|sausages?|bacon|ham|turkey|burgers?|ground)\b|\b(?:vegetable|veggie|mushroom|garden|plant[- ]based|vegan|no[- ]chicken|not[- ]chicken|vegetarian)\s+(?:broth|stock|bouillon|base)\b|\bmeatless\b|\bmeat[- ]free\b|\bbeefsteak tomato(?:es)?\b|\bgoat(?:'s)? (?:milk|cheese)\b|\bduck sauce\b|\bmincemeat\b(?= .*\bvegetable suet\b)/gi;
+const MEAT_LOOKALIKE = /\b(?:plant[- ]based|vegan|veggie|vegetarian|meatless|meat[- ]free|beyond|impossible|soy|tofu)\s+(?:meat|chicken|beef|pork|sausages?|bacon|ham|turkey|burgers?|ground)\b|\b(?:vegetable|veggie|mushroom|garden|plant[- ]based|vegan|no[- ]chicken|not[- ]chicken|vegetarian)\s+(?:broth|stock|bouillon|base)\b|\bmeatless\b|\bmeat[- ]free\b|\bbeefsteak tomato(?:es)?\b|\bgoat(?:'s)? (?:milk|cheese)\b|\bduck sauce\b|\bmincemeat\b(?= .*\bvegetable suet\b)|\b(?:crab|fish|shellfish)[- ]?meats?\b/gi;
 
 const MEAT_RE = /\bchicken|\bbeef\b|\bpork\b|\blamb\b|\bturkey\b|\bveal\b|\bduck\b|\bgoat\b|\bbison\b|\bvenison|\brabbit|\bham\b|\bhams\b|\bbacon|prosciutto|pancetta|\bsausages?|pepperoni|salami|\bgelatine?\b|\blard\b|\btallow|\bsuet\b|\banchov|\bmeat\b|\bmeats\b|\bbroth|\bstock\b|\bbouillon|\brennet\b|\bcarmine\b/i;
 const SEAFOOD_RE = new RegExp(`${SHIELD_RE.fish!.source}|${SHIELD_RE.shellfish!.source}`, "i");
@@ -438,49 +438,261 @@ export function isMadeProductTitle(title: string): boolean {
   return MADE_PRODUCT_SQUASH.test(squash);
 }
 
+
 /**
- * A list is real only if, after stripping a leading "Ingredients:" label, it has at least
- * one alphabetic token of 3+ letters that is not a placeholder, and no placeholder phrase
- * appears anywhere. Allergen-only statements (Contains / May contain / facility) are not a list.
- * Punctuation-only placeholders (—, -, –, ...) count as no list. Text that is not a real list
- * can still be scanned for allergen / meat / fish words (refusals may only be added).
+ * k3 r2: a list is real only if, after removing allergen statements and package-referral
+ * sentences, the remainder has at least two comma- or semicolon-separated items, and at
+ * least one item contains a recognized English or French food word. Placeholder words
+ * never void a real list by substring; only a whole segment can be a placeholder.
  */
-const PLACEHOLDER_PHRASE =
-  /n\/a|\bnot available\b|\bnot applicable\b|\bsee packaging\b|\bsee package\b|\bsee label\b|\bunavailable\b|\bunknown\b|\bnone\b|\bnil\b|\btbd\b|\bnull\b|\bundefined\b|\bna\b/i;
-const PLACEHOLDER_WORDS = new Set([
-  "n/a", "na", "none", "nil", "tbd", "null", "undefined", "unavailable", "unknown",
-  "available", "applicable", "package", "packaging", "label", "see", "not", "ingredients",
-  // leftovers after stripping allergen / facility statements
-  "may", "contain", "contains", "traces", "allergy", "advice", "warning",
-  "produced", "manufactured", "processed", "packed", "packaged", "facility",
-  "plant", "factory", "bakery", "suitable",
+const PACKAGE_REFERRAL =
+  /^(?:(?:please\s+)?(?:see|refer(?:\s+to)?|voir|consulter)\b.{0,100}\b(?:package|packaging|label|emballage|etiquette)|product packaging for most accurate|(?:ingredients?|information)\s+not\s+(?:listed|provided)|not listed|no information|information not provided|non disponibles?|coming soon|please refer to the product label|refer to packag(?:e|ing)|refer to the product label|see product packaging|ingredients? unavailable|ingredients not listed)/i;
+const ALLERGEN_STATEMENT =
+  /^(?:may (?:also )?contain\b|contains?\s*:|contains none of the priority allergens|none of the priority allergens|traces of\b|allergy advice\b|(?:produced|manufactured|made|processed|packed|packaged) in (?:a )?(?:facility|plant|factory|bakery)\b|not suitable for\b|warning\s*:)/i;
+const WHOLE_SEGMENT_PLACEHOLDER =
+  /^(?:—|–|-{1,2}|\.{2,}|…|\?|0|n\/?a|n\.a\.|na|none|nil|tbd|tba|null|undefined|pending|unknown|unavailable|varies|various|unlisted)$/i;
+
+/** English + French ingredient lexicon for "does this look like a real list?". */
+const FOOD_WORD_SRC = `
+  water salt sugar sugars flour oil oils milk butter cream cheese egg eggs yolk yolks
+  tomato tomatoes onion onions garlic pepper peppers chicken beef pork wheat yeast vinegar
+  extract starch protein juice rice corn oat oats barley rye soy soya soybean soybeans
+  peanut peanuts almond almonds cashew cashews walnut walnuts sesame tahini basil olive
+  olives canola sunflower palm coconut potato potatoes carrot carrots celery parsley cilantro
+  lime lemon spice spices herb herbs paprika cumin chili chilli cider honey maple molasses
+  gelatin gelatine culture enzyme cocoa chocolate vanilla flavour flavor color colour citric
+  ascorbic acid phosphate calcium potassium magnesium lecithin gum pectin malt dextrose
+  fructose glucose sucrose syrup invert modified hydrogenated vegetable vegetables fruit
+  fruits berry berries apple apples orange grape banana mango pineapple peach pear cherry
+  strawberry blueberry raspberry cranberry raisin raisins date dates fig figs ginger turmeric
+  cinnamon nutmeg clove cloves mustard horseradish mayo mayonnaise ketchup relish pickle
+  pickles cucumber lettuce spinach kale cabbage broccoli cauliflower pea peas bean beans
+  lentil lentils chickpea chickpeas hummus tofu tempeh miso edamame noodle noodles pasta
+  bread breadcrumb breadcrumbs crumb crumbs cracker crackers bun buns dough batter coating
+  fillet fillets steak steaks chop loin breast thigh wing wings rib ribs bacon ham sausage
+  turkey lamb duck veal fish salmon tuna cod haddock shrimp prawn crab lobster clam mussel
+  oyster scallop anchovy sardine trout tilapia pollock surimi imitation meat meats stock
+  broth bouillon dashi bonito worcestershire tamari shoyu teriyaki semolina durum graham
+  panko buttermilk whey casein ghee yogurt yoghurt mozzarella cheddar parmesan sour
+  sodium nitrite nitrate bicarbonate baking soda powder onion garlic
+  eau sel sucre sucres farine huile huiles lait beurre creme fromage oeuf oeufs jaune
+  tomate tomates oignon oignons ail poivre poulet boeuf porc ble levure vinaigre extrait
+  amidon proteine jus riz mais avoine orge seigle soja soya arachide arachides amande
+  amandes noix noisette noisettes sesame basilic olive olives tournesol palme coco
+  pomme pommes terre carotte carottes celeri persil coriandre citron epice epices herbe
+  herbes miel sirop gelatine culture enzyme cacao chocolat vanille arome naturel colorant
+  acide citrique ascorbique phosphate calcium potassium lecithine gomme pectine fructose
+  glucose vegetale vegetal legumes fruit fruits orange raisin banane mangue ananas peche
+  poire cerise fraise framboise canneberge datte figue gingembre curcuma cannelle muscade
+  moutarde mayonnaise ketchup cornichon concombre laitue epinard chou brocoli pois haricot
+  haricots lentille lentilles tofu tempeh miso nouille nouilles pates pain chapelure
+  filet filets steak poitrine cuisse lard jambon saucisse dinde agneau canard veau
+  poisson saumon thon morue crevette crevettes crabe homard palourde moule huitre
+  petoncle anchois sardine truite viande bouillon sauce pate concentre semoule feves
+  feve dur tapioca amidon eau filtree biologiques biologique canne
+  catfish swordfish whitefish monkfish kingfish bluefish lingcod blackcod
+  codfish tunafish rockfish redfish snowcrab kingcrab crawfish crayfish
+  shellfish lobstertail lobstertails crabmeat pollock tilapia halibut
+  eggplant eggplants mushroom mushrooms aubergine champignon champignons
+  buckwheat groats quinoa millet sorghum teff amaranth kasha farro spelt kamut couscous bulgur polenta grits oatmeal granola sarrasin
+  bass seabass snapper grouper mackerel herring flounder sole perch pike walleye char steelhead mahi hake turbot brill skate roe
+`;
+const FOOD_WORDS = new Set(FOOD_WORD_SRC.split(/\s+/).filter((w) => w.length >= 3));
+
+const MADE_OR_FOOD_CONTINUATION = new Set([
+  ...FOOD_WORDS,
+  "paste", "pastes", "sauce", "sauces", "puree", "purees", "pureed", "spread", "spreads",
+  "dip", "dips", "mix", "mixes", "seasoning", "seasonings", "stock", "stocks", "broth",
+  "broths", "soup", "soups", "dressing", "dressings", "marinade", "marinades", "pesto",
+  "pestos", "relish", "relishes", "salsa", "salsas", "chutney", "chutneys", "ketchup",
+  "ketchups", "meat", "meats", "stick", "sticks", "cake", "cakes", "cracker", "crackers",
+  "noodle", "noodles", "milk", "butter", "oil", "flour", "bread", "fillet", "fillets",
+  "tail", "tails", "fish", "nog", "white", "yolk", "yolks", "bean", "beans",
 ]);
 
-function stripAllergenStatements(s: string): string {
-  return s
-    .replace(/\bmay (?:also )?contain\b[^.;\n]*/gi, " ")
-    .replace(/\bcontains?\s*:[^.;\n]*/gi, " ")
-    .replace(/\bcontains?\s+(?:milk|soy|soya|egg|eggs|wheat|gluten|peanuts?|tree\s*nuts?|nuts?|sesame|fish|shellfish|crustaceans?|molluscs?)\b[^.;\n]*/gi, " ")
-    .replace(/\btraces of\b[^.;\n]*/gi, " ")
-    .replace(/\ballergy advice\s*:?[^.;\n]*/gi, " ")
-    .replace(/\b(?:produced|manufactured|made|processed|packed|packaged) in (?:a )?(?:facility|plant|factory|bakery)\b[^.;\n]*/gi, " ")
-    .replace(/\bnot suitable for\b[^.;\n]*/gi, " ")
-    .replace(/\bwarning\s*:[^.;\n]*/gi, " ");
+/**
+ * Lookalike exclusions for joined-stem matching (documented in k3 r2 NOTES).
+ * fryer/fryers: "rye" is not a stem here; listed because it was an r4 substring false hit.
+ * brandywine: same, "bran" substring.
+ * veggie/veggies, reggiano: "egg" substring.
+ * gallo: "cod" substring (Pico de Gallo).
+ * fortuna: "tuna" substring.
+ * eggplant(s): egg + plant, but it is produce, not egg.
+ * crabapple(s): crab prefix + apple, but it is fruit, not shellfish.
+ * codes, codeine, codec, codex, coda: "cod" prefix, rest is not a food word; listed explicitly.
+ * goldfish: fish suffix, but a cracker brand, not fish meat.
+ * starfish, fishmonger, fishbowl, fishhook, fishtank, fisherman, fisher, fishing: fish suffix, not food.
+ * lifestyle: "style" made-product suffix, not a made food.
+ * shellfish, crayfish, crawfish: …fish suffix is mapped to shellfish, not fish.
+ */
+const STEM_LOOKALIKE: Record<string, Set<string>> = {
+  egg: new Set(["eggplant", "eggplants", "veggie", "veggies", "reggiano"]),
+  shellfish: new Set(["crabapple", "crabapples", "oystermushroom", "oystermushrooms"]),
+  fish: new Set(["fortuna", "gallo", "goldfish", "starfish", "fishmonger", "fishbowl", "fishhook", "fishtank", "fisherman", "fisher", "fishing", "fishnet", "fishnets"]),
+  gluten: new Set(["fryer", "fryers", "brandywine", "buckwheat"]),
+  soy: new Set(),
+  dairy: new Set(["buttercup", "buttercups", "butternut", "butternuts", "butterbean", "butterbeans", "creamery", "creameries", "milkweed", "milkweeds"]),
+  nuts: new Set(),
+  sesame: new Set(),
+  spicy: new Set(),
+};
+const COD_LOOKALIKE = new Set(["codes", "codeine", "codec", "codex", "coda", "coddle", "coddled"]);
+const FISH_AS_SHELLFISH = new Set(["shellfish", "crayfish", "crawfish"]);
+
+function foldScan(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/œ/gi, "oe")
+    .replace(/æ/gi, "ae")
+    .toLowerCase()
+    .replace(/[’']/g, " ")
+    .replace(/-/g, " ");
+}
+
+function scanTokens(text: string): string[] {
+  return foldScan(text).match(/[a-z]{2,}/g) ?? [];
+}
+
+const PREFIX_STEMS: Record<string, string[]> = {
+  shellfish: ["shrimp", "shrimps", "crab", "crabs", "oyster", "oysters", "prawn", "prawns", "lobster", "lobsters", "clam", "clams", "mussel", "mussels", "scallop", "scallops"],
+  fish: ["tuna", "fish", "cod", "salmon", "anchov", "haddock", "trout", "pollock"],
+  egg: ["egg"],
+  soy: ["soy", "soya"],
+  dairy: ["milk", "butter", "cheese", "cream", "whey"],
+  nuts: ["peanut", "almond", "walnut", "cashew", "pecan", "hazelnut"],
+  gluten: ["wheat", "flour", "barley", "rye", "oat"],
+  sesame: ["sesame"],
+};
+
+const SUFFIX_SHELLFISH = /(crab|shrimp|prawn|lobster|oyster|lobstertail)s?$/;
+const SUFFIX_FISH = /(fish|cod)$/;
+// Bare stems ("oyster", "fish", "cod") belong to SHIELD_RE so lookalikes like
+// "oyster mushroom" keep the existing word-boundary + negative-lookahead rules.
+const BARE_SHELLFISH_SUFFIX = new Set(["crab", "crabs", "shrimp", "shrimps", "prawn", "prawns", "lobster", "lobsters", "oyster", "oysters", "lobstertail", "lobstertails"]);
+const BARE_FISH_SUFFIX = new Set(["fish", "cod"]);
+
+function isLookalike(id: string, token: string): boolean {
+  if (STEM_LOOKALIKE[id]?.has(token)) return true;
+  if ((id === "fish" || PREFIX_STEMS.fish?.some((s) => token.startsWith(s))) && COD_LOOKALIKE.has(token)) return true;
+  return false;
+}
+
+/** Joined-word / allergen-stem hits on a title or a list. Add-only. */
+export function stemHits(id: string, text: string): boolean {
+  if (!text) return false;
+  const tokens = scanTokens(text);
+  for (const tok of tokens) {
+    if (isLookalike(id, tok)) continue;
+    if (id === "fish" && FISH_AS_SHELLFISH.has(tok)) continue;
+    if (id === "shellfish" && FISH_AS_SHELLFISH.has(tok)) return true;
+    if (id === "shellfish" && SUFFIX_SHELLFISH.test(tok) && !BARE_SHELLFISH_SUFFIX.has(tok)) return true;
+    if (id === "fish" && SUFFIX_FISH.test(tok) && !BARE_FISH_SUFFIX.has(tok) && !FISH_AS_SHELLFISH.has(tok)) return true;
+    for (const stem of PREFIX_STEMS[id] ?? []) {
+      if (tok === stem) continue; // whole-word hits belong to SHIELD_RE
+      if (tok.startsWith(stem) && tok.length > stem.length) {
+        const rest = tok.slice(stem.length);
+        if (isLookalike(id, tok)) continue;
+        if (id === "fish" && COD_LOOKALIKE.has(tok)) continue;
+        if (STEM_LOOKALIKE[id]?.has(tok)) continue;
+        // Rest is a food/made-product word, or any letter tail of length >= 3
+        // (Eggrolls, Cheeseburger, Lobsterbisque, Soymilk, Fishsauce). Lookalikes
+        // already skipped, so fryer/gallo/veggie/fortuna mid-word false hits stay out.
+        if (MADE_OR_FOOD_CONTINUATION.has(rest) || (rest.length >= 3 && /^[a-z]+$/.test(rest))) return true;
+      }
+    }
+  }
+  return false;
+}
+
+const FR_PLANT_LOOKALIKE =
+  /(?:lait|creme|beurre|fromage|yog(?:hourt|ourt)?)\s+(?:de\s+|d\s+)?(?:coco|amande|amandes|avoine|soja|soya|riz|cajou|pois)|noix\s+de\s+coco/gi;
+
+const FR_SHIELD: Record<string, RegExp> = {
+  shellfish: /\b(?:crevettes?|crabes?|homards?|huitres?|palourdes?|moules?|petoncles?|mollusques?|crustaces?|fruits de mer)\b/i,
+  fish: /\b(?:morue|thon|poisson|saumon|anchois|truite|sardines?|eglefin|aiglefin|fletan|merlu|hareng|maquereau)\b/i,
+  egg: /\b(?:oeufs?|jaunes?)\b/i,
+  gluten: /\b(?:ble|seigle|orge|froment|epeautre|avoine)\b/i,
+  soy: /\b(?:soja|soya)\b/i,
+  dairy: /\b(?:lait|beurre|fromage|creme|yaourt|yogourt|yoghourt|ghee)\b/i,
+  nuts: /\b(?:arachides?|noix|amandes?|noisettes?|cajou|pacanes?|pistaches?)\b/i,
+  sesame: /\b(?:sesame|tahini)\b/i,
+};
+
+const FR_MEAT = /\b(?:poulet|boeuf|porc|dinde|jambon|lard|saucisse|viande|agneau|veau|canard|bacon|dindon)\b/i;
+const PREFIX_MEAT = ["chicken", "beef", "pork", "turkey", "lamb", "veal", "duck", "goat", "bison", "venison", "bacon", "ham", "sausage", "pepperoni", "salami", "jerky", "prosciutto", "pancetta"];
+const MEAT_STEM_LOOKALIKE = new Set(["hammer", "hammers", "hamster", "hamsters", "hamilton", "hamlin", "chickenpox", "duckling", "goatee", "hamburgerhelper"]);
+function meatHits(text: string): boolean {
+  if (!text) return false;
+  for (const tok of scanTokens(text)) {
+    if (MEAT_STEM_LOOKALIKE.has(tok)) continue;
+    for (const stem of PREFIX_MEAT) {
+      if (tok === stem) continue;
+      if (tok.startsWith(stem) && tok.length > stem.length) {
+        const rest = tok.slice(stem.length);
+        if (MADE_OR_FOOD_CONTINUATION.has(rest) || (rest.length >= 3 && /^[a-z]+$/.test(rest))) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function frenchPrep(text: string, id: string): string {
+  let s = foldScan(text);
+  if (id === "dairy" || id === "nuts") s = s.replace(FR_PLANT_LOOKALIKE, " ");
+  return s;
+}
+
+export function frenchHits(id: string, text: string): boolean {
+  const re = FR_SHIELD[id];
+  if (!re || !text) return false;
+  return re.test(frenchPrep(text, id));
+}
+
+function splitListSegments(raw: string): string[] {
+  // Sentences first, then dashed referrals like "… salt - see package for allergens".
+  const sentences = raw.split(/(?<=[.;\n])\s+|\s+[–—-]\s+/);
+  const kept: string[] = [];
+  for (const sent of sentences) {
+    const t = sent.trim();
+    if (!t) continue;
+    if (WHOLE_SEGMENT_PLACEHOLDER.test(t.replace(/^[.,;:]+|[.,;:]+$/g, "").trim())) continue;
+    if (ALLERGEN_STATEMENT.test(t)) continue;
+    if (PACKAGE_REFERRAL.test(t)) continue;
+    kept.push(t);
+  }
+  return kept;
+}
+
+const NUTRITION_LINE = /\b\d+\s*(?:mg|mcg|ug|g|kg|ml|l|kcal|cal|iu|%|uantité|quantite)\b|sodium\s*\(\s*na\s*\)/i;
+
+function hasFoodWord(item: string): boolean {
+  return scanTokens(item).some((w) => FOOD_WORDS.has(w));
 }
 
 export function isRealIngredientList(raw: string | undefined | null): boolean {
   let s = (raw ?? "").trim();
   if (!s) return false;
-  s = s.replace(/^ingredients\s*:\s*/i, "").trim();
+  s = s.replace(/^(?:ingredients|ingr[eé]dients)\s*:\s*/i, "").trim();
   if (!s) return false;
-  if (PLACEHOLDER_PHRASE.test(s)) return false;
-  const rest = stripAllergenStatements(s);
-  const tokens = (rest
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .match(/[a-z]{3,}/g) ?? []);
-  return tokens.some((w) => !PLACEHOLDER_WORDS.has(w));
+  const remainder = splitListSegments(s).join(" ").trim();
+  if (!remainder) return false;
+  const rawItems = remainder.split(/[,;]/).map((x) => x.trim()).filter(Boolean);
+  // Whole-item placeholders ("Na", "N/A", "none") do not count toward a real list; they never
+  // void neighbouring food items by substring ("Sodium (Na) 200 mg" stays inside its item).
+  const items = rawItems.filter((item) => !WHOLE_SEGMENT_PLACEHOLDER.test(item.replace(/^[.,;:]+|[.,;:]+$/g, "").trim()));
+  const droppedPlaceholderItem = items.length !== rawItems.length;
+  const food = items.some(hasFoodWord);
+  if (items.length >= 2) return food;
+  // A single honest food item ("Tomatoes.", "Olive oil.", "Catfish.", "Chicken.") is a real list
+  // only when we did not have to strip a referral, statement, or placeholder item to get there
+  // ("see package. Shrimp", "Na, salt") and the line is not a nutrition fact ("Sodium (Na) 200 mg").
+  if (items.length === 1 && food && !NUTRITION_LINE.test(items[0]!)) {
+    const afterLabel = s;
+    const strippedSomething = droppedPlaceholderItem || splitListSegments(afterLabel).join(" ").trim() !== afterLabel.trim();
+    if (!strippedSomething) return true;
+  }
+  return false;
 }
 
 /** Single-ingredient raw foods whose title alone is enough to judge a shield. */
@@ -530,7 +742,7 @@ export function shieldBlocks(
   const out: string[] = [];
   // A made product with no real list is never a whole food; doubt fails every asked tag.
   const doubt = !opts.ignoreDoubt && !wholeFood(attrs, title) && !realList;
-  // Split / joined-tail title is only used when there is no real list; matches are word-boundary only.
+  // Split / joined-stem / French checks always run on the title and the list (add-only).
   const splitTitle = safetySplitTitle(title);
   for (const id of allergies) {
     const re = SHIELD_RE[id];
@@ -545,31 +757,49 @@ export function shieldBlocks(
       out.push(`${id} shield: may contain (ingredients list)`);
       continue;
     }
-    // Raw-title word-boundary matching always (814f702). Split title only when there is no real list.
-    const titleHit = re.test(prep(title)) || (!realList && re.test(prep(splitTitle)));
+    // Raw-title word-boundary matching always (814f702). Joined-stem and split-title checks
+    // always run on the title and the list, and can only add refusals, whether or not the list is real.
+    const titleHit =
+      re.test(prep(title)) ||
+      re.test(prep(splitTitle)) ||
+      stemHits(id, title) ||
+      stemHits(id, splitTitle) ||
+      frenchHits(id, title);
     if (titleHit && !stateFree(id)) {
       out.push(`${id} shield: "${title}"`);
       continue;
     }
-    // Non-real lists can still add refusals from words that appear (never remove one).
-    if (ingredients && re.test(prep(ingredients))) {
+    // List text (real or not) can only add refusals: word-boundary, stems, and French lexicon.
+    if (
+      ingredients &&
+      (re.test(prep(ingredients)) || stemHits(id, ingredients) || frenchHits(id, ingredients))
+    ) {
       out.push(`${id} shield: ingredients list`);
       continue;
     }
     if (doubt && !stateFree(id)) out.push(`${id} shield: no ingredient list to check`);
   }
   const veg = (x: string) => plain(x).replace(MEAT_LOOKALIKE, " ");
-  // With a real list: raw title + list only (814f702). With no real list: also the split title.
-  const vegText = realList ? `${veg(title)} ${veg(ingredients)}` : `${veg(title)} ${veg(splitTitle)} ${veg(ingredients)}`;
+  // Raw + split title + list (add-only). Stems and French meat/fish words can only add a refusal.
+  const vegText = `${veg(title)} ${veg(splitTitle)} ${veg(ingredients)}`;
+  // Pescatarian must not treat the split of "Crabmeat" → "crab meat" as land meat.
+  // Seafood "meat" compounds are also stripped by MEAT_LOOKALIKE.
+  const pescText = `${veg(title)} ${veg(ingredients)}`;
+  const seaStem =
+    stemHits("fish", title) || stemHits("fish", splitTitle) || stemHits("fish", ingredients) ||
+    stemHits("shellfish", title) || stemHits("shellfish", splitTitle) || stemHits("shellfish", ingredients) ||
+    frenchHits("fish", title) || frenchHits("fish", ingredients) ||
+    frenchHits("shellfish", title) || frenchHits("shellfish", ingredients);
+  const meatStem = FR_MEAT.test(foldScan(`${title} ${ingredients}`)) || meatHits(title) || meatHits(ingredients);
   if (prefs.has("vegetarian") || prefs.has("vegan")) {
     const who = prefs.has("vegan") ? "vegan" : "vegetarian";
     const plantTitle = attrs.prepared.includes("plant");
-    if ((!plantTitle && (attrs.category === "meat" || attrs.category === "seafood")) || MEAT_RE.test(vegText) || SEAFOOD_RE.test(vegText)) {
+    if ((!plantTitle && (attrs.category === "meat" || attrs.category === "seafood")) || MEAT_RE.test(vegText) || SEAFOOD_RE.test(vegText) || seaStem || meatStem) {
       out.push(`${who}: contains meat or fish`);
     } else if (doubt) out.push(`${who}: no ingredient list to check`);
   } else if (prefs.has("pescatarian")) {
     const plantTitle = attrs.prepared.includes("plant");
-    if ((!plantTitle && attrs.category === "meat") || MEAT_RE.test(vegText)) out.push("pescatarian: contains meat");
+    if ((!plantTitle && attrs.category === "meat") || MEAT_RE.test(pescText) || meatStem) out.push("pescatarian: contains meat");
     else if (doubt) out.push("pescatarian: no ingredient list to check");
   }
   if (prefs.has("vegan") && VEGAN_ANIMAL.test(`${title} ${ingredients}`)) out.push("vegan: animal product");
