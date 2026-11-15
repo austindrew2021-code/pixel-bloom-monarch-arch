@@ -415,17 +415,37 @@ export function squashedText(text: string): string {
 /** Split a title only at a made-product suffix / joined tail ("shrimppaste" → "shrimp paste"). */
 const MADE_SUFFIX = "sauces?|pastes?|pureed|purees?|spreads?|dips?|mixes?|mix|seasonings?|stocks?|broths?|soups?|dressings?|marinades?|pestos?|relishes?|salsas?|chutneys?|ketchups?|sticks?";
 
+// Joined gluten food suffixes split so SHIELD_RE sees the same words as the spaced form
+// on r4 / caa0398. Lookalikes stay unsplit: buckwheat (wheat), cauliflower (flour),
+// breadfruit (bread), sweetbread(s) (organ meat, not a baked bread).
+const GLUTEN_FOOD_SUFFIX = "noodles?|crackers?|breads?|buns?|rolls?|wraps?|pasta|bagels?|pitas?|cakes?|cookies?|biscuits?|pretzels?|croutons?|flour|wheat";
+const GLUTEN_JOIN_LOOKALIKE = new Set([
+  "buckwheat", "cauliflower", "cauliflowers", "breadfruit", "breadfruits", "sweetbread", "sweetbreads",
+]);
+
+export function splitGlutenFoodWords(text: string): string {
+  if (!text) return text;
+  const re = new RegExp(`\\b([a-z]{3,})(${GLUTEN_FOOD_SUFFIX})\\b`, "gi");
+  return text.replace(re, (all, head, suf) => {
+    const joined = `${head}${suf}`.toLowerCase();
+    if (GLUTEN_JOIN_LOOKALIKE.has(joined)) return all;
+    return `${head} ${suf}`;
+  });
+}
+
 export function safetySplitTitle(title: string): string {
-  const t = title
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[’']/g, "")
-    .replace(/[^a-z0-9%]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(new RegExp(`\\b([a-z]{3,})(${MADE_SUFFIX})\\b`, "g"), "$1 $2")
-    .replace(/\bcrabmeat(s)?\b/g, "crab meat$1");
+  const t = splitGlutenFoodWords(
+    title
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[’']/g, "")
+      .replace(/[^a-z0-9%]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(new RegExp(`\\b([a-z]{3,})(${MADE_SUFFIX})\\b`, "g"), "$1 $2")
+      .replace(/\bcrabmeat(s)?\b/g, "crab meat$1"),
+  );
   return ` ${t} `;
 }
 
@@ -605,8 +625,17 @@ export function stemHits(id: string, text: string): boolean {
   return false;
 }
 
-const FR_PLANT_LOOKALIKE =
+// Dairy-only plant lookalikes (Canadian bilingual labels). These phrases are
+// stripped ONLY for the dairy check. Nuts, soy, gluten, sesame and every other
+// check read the original text (so "lait d'amande" / "beurre de cajou" still
+// refuse nuts).
+const FR_DAIRY_PLANT_LOOKALIKE =
   /(?:lait|creme|beurre|fromage|yog(?:hourt|ourt)?)\s+(?:de\s+|d\s+)?(?:coco|amande|amandes|avoine|soja|soya|riz|cajou|pois)|noix\s+de\s+coco/gi;
+// Nuts-only coconut lookalikes: "noix" in "noix de coco" is coconut, not a tree nut.
+// "lait/crème de coco" have no nut stem after folding, but are listed so the notes
+// match the code exactly.
+const FR_NUT_COCONUT_LOOKALIKE =
+  /noix\s+de\s+coco|(?:lait|creme)\s+(?:de\s+|d\s+)?coco/gi;
 
 const FR_SHIELD: Record<string, RegExp> = {
   shellfish: /\b(?:crevettes?|crabes?|homards?|huitres?|palourdes?|moules?|petoncles?|mollusques?|crustaces?|fruits de mer)\b/i,
@@ -639,7 +668,8 @@ function meatHits(text: string): boolean {
 
 function frenchPrep(text: string, id: string): string {
   let s = foldScan(text);
-  if (id === "dairy" || id === "nuts") s = s.replace(FR_PLANT_LOOKALIKE, " ");
+  if (id === "dairy") s = s.replace(FR_DAIRY_PLANT_LOOKALIKE, " ");
+  if (id === "nuts") s = s.replace(FR_NUT_COCONUT_LOOKALIKE, " ");
   return s;
 }
 
@@ -670,7 +700,17 @@ function hasFoodWord(item: string): boolean {
   return scanTokens(item).some((w) => FOOD_WORDS.has(w));
 }
 
-export function isRealIngredientList(raw: string | undefined | null): boolean {
+// Vague filler items: they never count toward a MADE product's 2-item minimum.
+// Whole item only (so "tomato sauce" and "garlic salt" stay specific). English and French.
+const FILLER_ITEM =
+  /^(?:spices?|seasonings?|sauces?|herbs?|flavou?rs?|natural flavou?rs?|artificial flavou?rs?|flavou?rings?|spice extracts?|seasoning blends?|other ingredients|epices|assaisonnements?|aromes?|arome naturels?|fines herbes)$/i;
+
+export function isFillerItem(item: string): boolean {
+  const t = foldScan(item).replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim();
+  return t.length > 0 && FILLER_ITEM.test(t);
+}
+
+export function isRealIngredientList(raw: string | undefined | null, title?: string): boolean {
   let s = (raw ?? "").trim();
   if (!s) return false;
   s = s.replace(/^(?:ingredients|ingr[eé]dients)\s*:\s*/i, "").trim();
@@ -682,11 +722,18 @@ export function isRealIngredientList(raw: string | undefined | null): boolean {
   // void neighbouring food items by substring ("Sodium (Na) 200 mg" stays inside its item).
   const items = rawItems.filter((item) => !WHOLE_SEGMENT_PLACEHOLDER.test(item.replace(/^[.,;:]+|[.,;:]+$/g, "").trim()));
   const droppedPlaceholderItem = items.length !== rawItems.length;
+  const made = Boolean(title && isMadeProductTitle(title));
+  if (made) {
+    // A made product needs at least two SPECIFIC (non-filler) items. "Basil.", "Sauce.",
+    // "Spices.", "Spices, sauce.", "Basil, seasoning.", "Herbs, natural flavour." and
+    // "Spices, salt." (salt is the only specific item) are all no list.
+    const specific = items.filter((item) => !isFillerItem(item));
+    return specific.length >= 2 && specific.some(hasFoodWord);
+  }
   const food = items.some(hasFoodWord);
   if (items.length >= 2) return food;
-  // A single honest food item ("Tomatoes.", "Olive oil.", "Catfish.", "Chicken.") is a real list
-  // only when we did not have to strip a referral, statement, or placeholder item to get there
-  // ("see package. Shrimp", "Na, salt") and the line is not a nutrition fact ("Sodium (Na) 200 mg").
+  // Plain non-made foods keep the one-honest-item rule ("Tomatoes.", "Olive oil.",
+  // "Catfish.", "Chicken.") when nothing was stripped and the line is not a nutrition fact.
   if (items.length === 1 && food && !NUTRITION_LINE.test(items[0]!)) {
     const afterLabel = s;
     const strippedSomething = droppedPlaceholderItem || splitListSegments(afterLabel).join(" ").trim() !== afterLabel.trim();
@@ -726,7 +773,7 @@ export function shieldBlocks(
   const attrs = parseAttrs(title);
   // Always keep the raw text so a non-real list can still ADD refusals (shrimp in "see package. Shrimp").
   const ingredients = product.ingredients?.trim() ?? "";
-  const realList = isRealIngredientList(ingredients);
+  const realList = isRealIngredientList(ingredients, title);
   // Drop "free" claims ("nut-free", "made in a facility free from peanuts") before testing; warnings stay.
   const clean = (x: string) =>
     sentences(x.replace(FREE_CLAIM, " "))
@@ -770,9 +817,14 @@ export function shieldBlocks(
       continue;
     }
     // List text (real or not) can only add refusals: word-boundary, stems, and French lexicon.
+    const splitIngredients = splitGlutenFoodWords(ingredients);
     if (
       ingredients &&
-      (re.test(prep(ingredients)) || stemHits(id, ingredients) || frenchHits(id, ingredients))
+      (re.test(prep(ingredients)) ||
+        re.test(prep(splitIngredients)) ||
+        stemHits(id, ingredients) ||
+        stemHits(id, splitIngredients) ||
+        frenchHits(id, ingredients))
     ) {
       out.push(`${id} shield: ingredients list`);
       continue;

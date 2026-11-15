@@ -100,8 +100,8 @@ test("k3-2: Crabmeat, crab meat, imitation, surimi, crab sticks, flavoured/style
   }
   assert.ok(refuses(P("Crabmeat", "200 g", 4.99), "shellfish"));
   assert.ok(refuses(P("Crabmeat", "200 g", 4.99, { ingredients: "—" }), "shellfish"));
-  // Clean crab list: still shellfish, pescatarian may pass (seafood).
-  const clean = P("Crabmeat", "200 g", 4.99, { ingredients: "Crab." });
+  // Clean crab list (two specific items: a made product needs more than "Crab."): still shellfish, pescatarian may pass (seafood).
+  const clean = P("Crabmeat", "200 g", 4.99, { ingredients: "Crab, salt." });
   assert.ok(refuses(clean, "shellfish"));
   assert.ok(refuses(clean, "vegan"));
   assert.equal(refuses(clean, "pescatarian"), false, "clean Crabmeat still passes pescatarian");
